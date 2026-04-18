@@ -6,8 +6,8 @@ Production-ready FastAPI service for DeepSeek-OCR + DocLayout-YOLO.
 
 1. `docker compose up -d --build`
 2. Test OCR: `curl -X POST "http://localhost:8000/ocr" -F "file=@test.jpg"`
-
-Endpoints:
+3. `docker compose logs -f deepseek-ocr-api`
+   Endpoints:
 
 - POST /ocr → DeepSeek OCR (markdown)
 - POST /paddle-ocr → Figure detection
