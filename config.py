@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     OLLAMA_TIMEOUT: int = 120
     RATE_LIMIT: str = "60/minute"
     DEFAULT_PROMPT: str = "<|grounding|>Convert the document to clean markdown."
+    NO_GROUNDING_PROMPT: str = "Free OCR."
     OLLAMA_MODEL: str = "deepseek-ocr"
     OLLAMA_NUM_CTX: int = 8192
     DOC_LAYOUT_MODEL_PATH: str = (
