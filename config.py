@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE: int = 10 * 1024 * 1024
     OLLAMA_TIMEOUT: int = 120
     RATE_LIMIT: str = "60/minute"
-    DEFAULT_PROMPT: str = "Free OCR"
+    DEFAULT_PROMPT: str = "<|grounding|>Convert the document to clean markdown."
     OLLAMA_MODEL: str = "deepseek-ocr"
     OLLAMA_NUM_CTX: int = 8192
     OLLAMA_NUM_PREDICT: int = 4096       # Max output tokens (prevent infinite loop)
