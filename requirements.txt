@@ -5,6 +5,7 @@ python-multipart
 pillow
 opencv-python-headless
 doclayout-yolo
+huggingface-hub
 ollama
 pydantic-settings
 python-dotenv
