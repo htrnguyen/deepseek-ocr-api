@@ -1,17 +1,27 @@
 from pydantic_settings import BaseSettings
 
+
 class Settings(BaseSettings):
     MAX_LONG_SIDE: int = 1280
     MAX_FILE_SIZE: int = 10 * 1024 * 1024
     OLLAMA_TIMEOUT: int = 120
     RATE_LIMIT: str = "60/minute"
-    DEFAULT_PROMPT: str = "Free OCR"             # prompt mặc định không grounding
+    DEFAULT_PROMPT: str = "Free OCR"
     OLLAMA_MODEL: str = "deepseek-ocr"
     OLLAMA_NUM_CTX: int = 8192
-    DOC_LAYOUT_MODEL_PATH: str = "DocLayout-YOLO-DocStructBench/doclayout_yolo_docstructbench_imgsz1024.pt"
+    OLLAMA_NUM_PREDICT: int = 4096       # Max output tokens (prevent infinite loop)
+    OLLAMA_TEMPERATURE: float = 0.0
+    OLLAMA_REPEAT_PENALTY: float = 1.3   # Penalize repeated tokens to break loops
+    OLLAMA_REPEAT_LAST_N: int = 256      # Look back window for repeat detection
+    OLLAMA_TOP_K: int = 40
+    OLLAMA_TOP_P: float = 0.9
+    DOC_LAYOUT_MODEL_PATH: str = (
+        "DocLayout-YOLO-DocStructBench/doclayout_yolo_docstructbench_imgsz1024.pt"
+    )
 
     class Config:
         env_file = ".env"
         extra = "ignore"
+
 
 settings = Settings()
