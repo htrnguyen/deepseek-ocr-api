@@ -12,30 +12,25 @@ import logging
 
 logger = logging.getLogger("deepseek-ocr-api")
 
-
 class DeepSeekOCRService:
     def __init__(self):
         self.model = settings.OLLAMA_MODEL
 
-    async def process(
-        self,
-        file_content: bytes,
-        filename: str,
-        prompt: str,
-        temperature: float = 0.0,
-        num_predict: int = -1,
-    ):
+    async def process(self, file_content: bytes, filename: str, prompt: str,
+                      temperature: float = 0.0, 
+                      num_ctx: int = 8192,
+                      num_predict: int = -1):
+        
         start_time = time.time()
         tmp_path = None
 
-        logger.info(f"START DeepSeek OCR - File: {filename}")
+        logger.info(f"START DeepSeek OCR -> File: {filename} | Prompt: {prompt}")
 
         try:
+            # Preprocessing ảnh
             with Image.open(BytesIO(file_content)) as img:
                 original_size = img.size
-                logger.info(
-                    f"Original image size: {original_size[0]}x{original_size[1]}"
-                )
+                logger.info(f"Original size: {original_size[0]}x{original_size[1]}")
 
                 if img.mode != "RGB":
                     img = img.convert("RGB")
@@ -44,53 +39,53 @@ class DeepSeekOCRService:
                 img = auto_resize_image(img, settings.MAX_LONG_SIDE)
 
                 processed_size = img.size
-                logger.info(
-                    f"Processed image size: {processed_size[0]}x{processed_size[1]}"
-                )
+                logger.info(f"Processed size: {processed_size[0]}x{processed_size[1]}")
 
                 suffix = Path(filename).suffix.lower()
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
                 tmp_path = tmp.name
                 img.save(tmp_path, quality=98 if suffix in [".jpg", ".jpeg"] else None)
 
-            logger.info(
-                f"Calling Ollama | Model: {self.model} | Timeout: {settings.OLLAMA_TIMEOUT}s | "
-                f"Temp: {temperature} | num_ctx: {settings.OLLAMA_NUM_CTX} | num_predict: {num_predict}"
-            )
+            # Gọi Ollama
+            ollama_start = time.time()
+            logger.info("DANG GOI Ollama...")
 
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     ollama.chat,
                     model=self.model,
-                    messages=[
-                        {"role": "user", "content": prompt, "images": [tmp_path]}
-                    ],
+                    messages=[{
+                        "role": "user",
+                        "content": prompt,          # Giữ nguyên prompt bạn truyền
+                        "images": [tmp_path]
+                    }],
                     options={
                         "temperature": temperature,
-                        "num_ctx": settings.OLLAMA_NUM_CTX,
-                        "num_predict": num_predict,
+                        "num_ctx": num_ctx,
+                        "num_predict": num_predict
                     },
-                    keep_alive=600,
+                    keep_alive=600
                 ),
-                timeout=settings.OLLAMA_TIMEOUT,
+                timeout=settings.OLLAMA_TIMEOUT
             )
+
+            ollama_time = round(time.time() - ollama_start, 3)
+            logger.info(f"Ollama tra loi trong {ollama_time}s")
 
             result_text = response.get("message", {}).get("content", "").strip()
             total_time = round(time.time() - start_time, 3)
 
-            logger.info(
-                f"DeepSeek OCR SUCCESS in {total_time}s | Tokens: {response.get('prompt_eval_count', 0)}/{response.get('eval_count', 0)}"
-            )
+            logger.info(f"DeepSeek OCR HOAN TAT trong {total_time}s")
 
             return {
                 "text": result_text,
                 "original_size": f"{original_size[0]}x{original_size[1]}",
                 "processed_size": f"{processed_size[0]}x{processed_size[1]}",
                 "processing_time": f"{total_time}s",
+                "ollama_time": f"{ollama_time}s",
                 "prompt_tokens": response.get("prompt_eval_count", 0),
                 "response_tokens": response.get("eval_count", 0),
-                "total_tokens": (response.get("prompt_eval_count") or 0)
-                + (response.get("eval_count") or 0),
+                "total_tokens": (response.get("prompt_eval_count") or 0) + (response.get("eval_count") or 0)
             }
 
         finally:

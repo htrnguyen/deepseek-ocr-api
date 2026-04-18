@@ -29,21 +29,14 @@ doclayout_service = DocLayoutService()
 async def deepseek_ocr(
     request: Request,
     file: UploadFile = File(...),
-    prompt: str = Form(None),
-    use_grounding: bool = Form(True),
+    prompt: str = Form(settings.DEFAULT_PROMPT),
     temperature: float = Form(0.0),
+    num_ctx: int = Form(8192),
     num_predict: int = Form(-1),
 ):
     if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
         raise HTTPException(
             status_code=400, detail="Only image files (JPG, PNG, WebP) are supported"
-        )
-
-    # Xử lý logic prompt
-    final_prompt = prompt
-    if not final_prompt:
-        final_prompt = (
-            settings.DEFAULT_PROMPT if use_grounding else settings.NO_GROUNDING_PROMPT
         )
 
     content = await file.read()
@@ -53,8 +46,9 @@ async def deepseek_ocr(
     result = await ocr_service.process(
         file_content=content,
         filename=file.filename,
-        prompt=final_prompt,
+        prompt=prompt,
         temperature=temperature,
+        num_ctx=num_ctx,
         num_predict=num_predict,
     )
 
