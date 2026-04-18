@@ -5,11 +5,12 @@ import tempfile
 from pathlib import Path
 from PIL import Image
 from io import BytesIO
-from fastapi import HTTPException
 import ollama
 from config import settings
 from image_utils import enhance_for_ocr, auto_resize_image
-from logger import logger
+import logging
+
+logger = logging.getLogger("deepseek-ocr-api")
 
 
 class DeepSeekOCRService:
@@ -22,7 +23,6 @@ class DeepSeekOCRService:
         filename: str,
         prompt: str,
         temperature: float = 0.0,
-        num_ctx: int = 12288,
         num_predict: int = -1,
     ):
         start_time = time.time()
@@ -53,7 +53,11 @@ class DeepSeekOCRService:
                 tmp_path = tmp.name
                 img.save(tmp_path, quality=98 if suffix in [".jpg", ".jpeg"] else None)
 
-            # Call Ollama
+            logger.info(
+                f"Calling Ollama | Model: {self.model} | Timeout: {settings.OLLAMA_TIMEOUT}s | "
+                f"Temp: {temperature} | num_ctx: {settings.OLLAMA_NUM_CTX} | num_predict: {num_predict}"
+            )
+
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     ollama.chat,
@@ -63,10 +67,10 @@ class DeepSeekOCRService:
                     ],
                     options={
                         "temperature": temperature,
-                        "num_ctx": num_ctx,
+                        "num_ctx": settings.OLLAMA_NUM_CTX,
                         "num_predict": num_predict,
                     },
-                    keep_alive=180,
+                    keep_alive=600,
                 ),
                 timeout=settings.OLLAMA_TIMEOUT,
             )
@@ -75,7 +79,7 @@ class DeepSeekOCRService:
             total_time = round(time.time() - start_time, 3)
 
             logger.info(
-                f"DeepSeek OCR completed in {total_time}s | Tokens: {response.get('prompt_eval_count', 0)} prompt / {response.get('eval_count', 0)} response"
+                f"DeepSeek OCR SUCCESS in {total_time}s | Tokens: {response.get('prompt_eval_count', 0)}/{response.get('eval_count', 0)}"
             )
 
             return {
