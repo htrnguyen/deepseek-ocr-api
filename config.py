@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     MAX_LONG_SIDE: int = 1280
     MAX_FILE_SIZE: int = 10 * 1024 * 1024
-    OLLAMA_TIMEOUT: int = 90
+    OLLAMA_TIMEOUT: int = 30
     RATE_LIMIT: str = "60/minute"
     DEFAULT_PROMPT: str = "<|grounding|>Convert the document to clean markdown."
     OLLAMA_MODEL: str = "deepseek-ocr"

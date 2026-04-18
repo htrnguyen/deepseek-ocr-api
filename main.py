@@ -31,7 +31,7 @@ async def deepseek_ocr(
     file: UploadFile = File(...),
     prompt: str = Form(settings.DEFAULT_PROMPT),
     temperature: float = Form(0.0),
-    num_ctx: int = Form(12288),
+    num_ctx: int = Form(8192),
     num_predict: int = Form(-1),
 ):
     if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
