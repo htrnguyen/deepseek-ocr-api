@@ -30,9 +30,6 @@ async def deepseek_ocr(
     request: Request,
     file: UploadFile = File(...),
     prompt: str = Form(settings.DEFAULT_PROMPT),
-    temperature: float = Form(0.0),
-    num_ctx: int = Form(8192),
-    num_predict: int = Form(-1),
 ):
     if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
         raise HTTPException(
@@ -47,9 +44,6 @@ async def deepseek_ocr(
         file_content=content,
         filename=file.filename,
         prompt=prompt,
-        temperature=temperature,
-        num_ctx=num_ctx,
-        num_predict=num_predict,
     )
 
     return {"success": True, "filename": file.filename, **result, "status": "success"}
