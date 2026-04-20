@@ -84,25 +84,16 @@ def smart_crop_content_region(
         0: title, 1: plain text, 2: abandon, 3: figure,
         4: figure_caption, 5: table, 6: table_caption,
         7: table_footnote, 8: isolate_formula, 9: formula_caption
-
-    Strategy:
-    - Detect all content classes (0,1,3,4,5,6,7,8,9) — exclude "abandon"(2)
-    - Compute unified bounding box around all detected content
-    - Add padding and crop
-    - If no content detected or content already fills most of the image,
-      return original (no crop needed)
-
-    Args:
-        image: PIL Image (RGB).
-        doclayout_model: Loaded YOLOv10 model instance.
-        padding: Pixels to add around detected content region.
-        min_content_ratio: If content area / total area > this, skip crop.
-
-    Returns:
-        (cropped_image, crop_info) where crop_info has metadata.
     """
     import tempfile
     import os
+    import time
+    from logger import logger
+
+    img_w, img_h = image.size
+    logger.info(
+        f"[smart_crop] Starting DocLayout-YOLO on {img_w}x{img_h} image"
+    )
 
     # Save temp file for YOLO prediction
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
@@ -110,9 +101,12 @@ def smart_crop_content_region(
         image.save(tmp_path, format="JPEG", quality=95)
 
     try:
+        predict_start = time.time()
         results = doclayout_model.predict(
             tmp_path, imgsz=1024, conf=0.2, verbose=False
         )
+        predict_time = round(time.time() - predict_start, 3)
+        logger.info(f"[smart_crop] DocLayout predict: {predict_time}s")
     finally:
         os.unlink(tmp_path)
 
@@ -123,10 +117,12 @@ def smart_crop_content_region(
     }
 
     if not results or len(results) == 0:
+        logger.info("[smart_crop] No results from DocLayout-YOLO")
         return image, crop_info
 
     result = results[0]
     if result.boxes is None or len(result.boxes) == 0:
+        logger.info("[smart_crop] No boxes detected")
         return image, crop_info
 
     # Content classes (all except "abandon" = 2)
@@ -141,14 +137,28 @@ def smart_crop_content_region(
     content_boxes = []
     labels = []
 
+    # Log ALL detected regions (including abandoned ones)
+    logger.info(f"[smart_crop] Total boxes detected: {len(boxes)}")
     for i in range(len(boxes)):
         cls_id = int(boxes.cls[i].item())
-        if cls_id in CONTENT_CLASSES:
-            box = boxes.xyxy[i].cpu().numpy()
+        conf = float(boxes.conf[i].item())
+        box = boxes.xyxy[i].cpu().numpy()
+        x1, y1, x2, y2 = map(int, box)
+        label = CLASS_NAMES.get(cls_id, f"class_{cls_id}")
+        is_content = cls_id in CONTENT_CLASSES
+        status = "✓" if is_content else "✗ (abandon)"
+
+        logger.info(
+            f"[smart_crop]   {status} [{label}] conf={conf:.2f} "
+            f"bbox=[{x1},{y1},{x2},{y2}] size={x2-x1}x{y2-y1}"
+        )
+
+        if is_content:
             content_boxes.append(box)
-            labels.append(CLASS_NAMES.get(cls_id, f"class_{cls_id}"))
+            labels.append(label)
 
     if not content_boxes:
+        logger.info("[smart_crop] No content regions found (all abandoned)")
         return image, crop_info
 
     # Compute unified bounding box
@@ -159,32 +169,48 @@ def smart_crop_content_region(
     x2 = int(all_boxes[:, 2].max())
     y2 = int(all_boxes[:, 3].max())
 
-    img_w, img_h = image.size
     content_area = (x2 - x1) * (y2 - y1)
     total_area = img_w * img_h
+    content_ratio = content_area / total_area
 
     crop_info["detected_regions"] = len(content_boxes)
     crop_info["region_labels"] = labels
-    crop_info["content_ratio"] = round(content_area / total_area, 2)
+    crop_info["content_ratio"] = round(content_ratio, 2)
+
+    logger.info(
+        f"[smart_crop] Content bbox: [{x1},{y1},{x2},{y2}] = "
+        f"{x2-x1}x{y2-y1} | "
+        f"Content ratio: {content_ratio:.1%} of {img_w}x{img_h}"
+    )
 
     # Skip crop if content already fills most of image
-    if content_area / total_area >= min_content_ratio:
+    if content_ratio >= min_content_ratio:
         crop_info["skip_reason"] = (
-            f"Content ratio {crop_info['content_ratio']:.0%} >= {min_content_ratio:.0%}"
+            f"Content ratio {content_ratio:.0%} >= {min_content_ratio:.0%}"
+        )
+        logger.info(
+            f"[smart_crop] SKIP crop — content {content_ratio:.0%} >= "
+            f"threshold {min_content_ratio:.0%}"
         )
         return image, crop_info
 
     # Apply padding
-    x1 = max(0, x1 - padding)
-    y1 = max(0, y1 - padding)
-    x2 = min(img_w, x2 + padding)
-    y2 = min(img_h, y2 + padding)
+    x1_pad = max(0, x1 - padding)
+    y1_pad = max(0, y1 - padding)
+    x2_pad = min(img_w, x2 + padding)
+    y2_pad = min(img_h, y2 + padding)
 
-    cropped = image.crop((x1, y1, x2, y2))
+    cropped = image.crop((x1_pad, y1_pad, x2_pad, y2_pad))
 
     crop_info["cropped"] = True
-    crop_info["crop_box"] = [x1, y1, x2, y2]
+    crop_info["crop_box"] = [x1_pad, y1_pad, x2_pad, y2_pad]
     crop_info["original_size"] = f"{img_w}x{img_h}"
-    crop_info["cropped_size"] = f"{x2 - x1}x{y2 - y1}"
+    crop_info["cropped_size"] = f"{x2_pad - x1_pad}x{y2_pad - y1_pad}"
+
+    logger.info(
+        f"[smart_crop] CROP applied: {img_w}x{img_h} → "
+        f"{x2_pad - x1_pad}x{y2_pad - y1_pad} | "
+        f"Removed {(1 - content_ratio):.0%} empty space"
+    )
 
     return cropped, crop_info
