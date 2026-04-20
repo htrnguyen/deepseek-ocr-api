@@ -6,11 +6,11 @@ class LoopDetector:
     """Detect repetitive token output during streaming."""
 
     LOOP_PATTERNS = [
-        re.compile(r"(<td>\s*</td>){60,}"),
-        re.compile(r"(<tr>\s*</tr>){40,}"),
-        re.compile(r"(\|\s*){60,}"),
-        re.compile(r"(</td><td>){60,}"),
-        re.compile(r"(<td></td>){60,}"),
+        re.compile(r"(<td>\s*</td>\s*){20,}"),
+        re.compile(r"(<tr>\s*</tr>\s*){15,}"),
+        re.compile(r"(\|\s*){20,}"),
+        re.compile(r"(</td>\s*<td>\s*){20,}"),
+        re.compile(r"(<tr>(\s*<t[dh]>\s*</t[dh]>)+\s*</tr>\s*){5,}"),
     ]
 
     @classmethod
@@ -19,7 +19,7 @@ class LoopDetector:
         is_pure_structure = False
         recent_tail = "".join(tokens[-50:])
         if len(recent_tail) >= 30:
-            clean_tail = re.sub(r'<[^>]+>|\s|\||-', '', recent_tail)
+            clean_tail = re.sub(r"<[^>]+>|\s|\||-", "", recent_tail)
             if len(clean_tail) == 0:
                 is_pure_structure = True
 
@@ -61,12 +61,12 @@ class LoopDetector:
                 for p_len in range(15, 40):
                     pattern = recent_text[-p_len:]
                     if recent_text.endswith(pattern * 3):
-                        clean_pattern = re.sub(r'<[^>]+>|\s|\||-', '', pattern)
+                        clean_pattern = re.sub(r"<[^>]+>|\s|\||-", "", pattern)
                         if len(clean_pattern) == 0:
-                            if recent_text.endswith(pattern * 60):
+                            if recent_text.endswith(pattern * 15):
                                 logger.warning(
                                     f"[loop_detect] Strategy 3b (Table Repeat) | "
-                                    f"Pattern: '{pattern}' repeated 60+ times"
+                                    f"Pattern: '{pattern}' repeated 15+ times"
                                 )
                                 return True
                         else:
