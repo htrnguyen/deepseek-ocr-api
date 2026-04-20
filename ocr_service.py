@@ -8,12 +8,6 @@ from io import BytesIO
 import ollama
 from fastapi import HTTPException
 from config import settings
-from image_utils import (
-    enhance_for_ocr,
-    auto_resize_image,
-    calculate_save_quality,
-    remove_grid_lines,
-)
 from logger import logger
 
 
@@ -30,10 +24,15 @@ class EmptyOutputError(Exception):
 class DeepSeekOCRService:
     """OCR service using DeepSeek model via Ollama with streaming monitoring.
 
+    DeepSeek-OCR uses Dynamic Resolution internally:
+    - Global view: 1×1024×1024 → 256 visual tokens
+    - Local patches: (1-6)×768×768 → (1-6)×144 visual tokens each
+    → We send the ORIGINAL image (EXIF-fixed only) and let the model handle patching.
+
     Key features:
+    - NO image preprocessing (model handles resolution internally)
     - Streaming inference with aggressive token loop detection (every 10 tokens)
     - Auto-retry: grounding mode fails → fallback to "Free OCR."
-    - Grid paper detection + removal via OpenCV morphological operations
     - Post-processing: clean grounding tags from output
     - keep_alive=-1: model stays loaded permanently
     """
@@ -207,13 +206,11 @@ class DeepSeekOCRService:
         self,
         tmp_path: str,
         original_size: tuple[int, int],
-        processed_size: tuple[int, int],
         filename: str,
         prompt: str,
         start_time: float,
     ) -> dict:
         """Single OCR attempt with given prompt."""
-        # Build Ollama options
         ollama_options = {
             "temperature": settings.OLLAMA_TEMPERATURE,
             "num_ctx": settings.OLLAMA_NUM_CTX,
@@ -230,7 +227,6 @@ class DeepSeekOCRService:
             f"repeat_penalty={ollama_options['repeat_penalty']}"
         )
 
-        # Call Ollama with streaming
         ollama_start = time.time()
         logger.info("[process] Sending streaming request to Ollama...")
 
@@ -274,7 +270,6 @@ class DeepSeekOCRService:
         return {
             "text": result_text,
             "original_size": f"{original_size[0]}x{original_size[1]}",
-            "processed_size": f"{processed_size[0]}x{processed_size[1]}",
             "processing_time": f"{total_time}s",
             "ollama_time": f"{ollama_time}s",
             "prompt_tokens": prompt_tokens,
@@ -290,7 +285,10 @@ class DeepSeekOCRService:
     ) -> dict:
         """Process an image through DeepSeek OCR.
 
-        Pipeline: Open → EXIF → RGB → Resize → Grid Removal → Enhance → Save → OCR
+        Pipeline: Open → EXIF Transpose → RGB → Save JPEG → OCR
+        NO resize/enhance — DeepSeek handles Dynamic Resolution internally
+        (Global 1024×1024 + Local patches 768×768, 1-6 patches).
+
         Auto-retry: if grounding mode fails, fallback to "Free OCR." prompt.
         """
         start_time = time.time()
@@ -299,10 +297,9 @@ class DeepSeekOCRService:
         logger.info(f"[process] OCR start | File: {filename}")
 
         try:
-            # --- Image preprocessing ---
             preprocess_start = time.time()
             with Image.open(BytesIO(file_content)) as img:
-                # Step 0: Fix EXIF rotation (smartphone photos)
+                # Step 1: Fix EXIF rotation (smartphone photos)
                 img = ImageOps.exif_transpose(img)
 
                 original_size = img.size
@@ -311,38 +308,23 @@ class DeepSeekOCRService:
                     f"Mode: {img.mode} | Size: {len(file_content) / 1024:.1f} KB"
                 )
 
+                # Step 2: Convert to RGB (required for JPEG save)
                 if img.mode != "RGB":
                     img = img.convert("RGB")
 
-                # Step 1: Resize (4K+ → max 2048px via LANCZOS)
-                img = auto_resize_image(img, settings.MAX_LONG_SIDE)
-                logger.info(
-                    f"[process] After resize: {img.size[0]}x{img.size[1]}"
-                )
-
-                # Step 2: Remove grid lines (if detected)
-                img = remove_grid_lines(img)
-
-                # Step 3: Enhance (Contrast + Sharpness)
-                img = enhance_for_ocr(img)
-
-                processed_size = img.size
-                save_quality = calculate_save_quality(
-                    len(file_content), processed_size
-                )
-
+                # Step 3: Save as JPEG (Ollama needs a file path)
+                # No resize, no enhance — let DeepSeek's Dynamic Resolution handle it
                 with tempfile.NamedTemporaryFile(
                     delete=False, suffix=".jpg"
                 ) as tmp:
                     tmp_path = tmp.name
-                    img.save(tmp_path, format="JPEG", quality=save_quality)
+                    img.save(tmp_path, format="JPEG", quality=95)
 
             preprocess_time = round(time.time() - preprocess_start, 3)
             saved_size = os.path.getsize(tmp_path) / 1024
             logger.info(
-                f"[process] Preprocessed: {processed_size[0]}x{processed_size[1]} | "
-                f"Quality: {save_quality} | Saved: {saved_size:.1f} KB | "
-                f"Time: {preprocess_time}s"
+                f"[process] Prepared: {original_size[0]}x{original_size[1]} | "
+                f"Saved: {saved_size:.1f} KB | Time: {preprocess_time}s"
             )
 
             # --- Attempt 1: Original prompt ---
@@ -350,7 +332,6 @@ class DeepSeekOCRService:
                 return await self._process_single(
                     tmp_path,
                     original_size,
-                    processed_size,
                     filename,
                     prompt,
                     start_time,
@@ -368,7 +349,6 @@ class DeepSeekOCRService:
                         result = await self._process_single(
                             tmp_path,
                             original_size,
-                            processed_size,
                             filename,
                             "Free OCR.",
                             start_time,
@@ -383,7 +363,6 @@ class DeepSeekOCRService:
                             f"[process] RETRY ALSO FAILED | "
                             f"{type(retry_error).__name__}: {retry_error}"
                         )
-                        # Fall through to raise original error
 
                 # Re-raise with proper HTTP status
                 self._raise_http_error(first_error, filename, start_time)

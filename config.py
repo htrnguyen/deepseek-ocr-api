@@ -7,14 +7,12 @@ class Settings(BaseSettings):
 
     DeepSeek OCR Reference (Ollama):
     - Model: deepseek-ocr (SAM + Qwen2 encoder, 8K context)
-    - Dynamic Resolution: Global(1024x1024) + Local patches(768x768, 1-6)
+    - Dynamic Resolution: Global(1024×1024) + Local patches(768×768, 1-6)
     - Prompts: "Free OCR." | "<|grounding|>OCR this image."
-    - Pipeline: EXIF → Resize(2048) → Grid Removal → Enhance → OCR
+    - Pipeline: EXIF → JPEG → Ollama (NO resize/enhance — model handles it)
     """
 
-    # Allow larger image sizes to utilize DeepSeek-OCR's dynamic resolution 
-    # (SAM local patches 768x768). Previously 1024 forced it to Global View only!
-    MAX_LONG_SIDE: int = 2048
+    # No resize — DeepSeek-OCR has built-in Dynamic Resolution
     MAX_FILE_SIZE: int = 10 * 1024 * 1024
     RATE_LIMIT: str = "60/minute"
 

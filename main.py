@@ -13,7 +13,7 @@ from logger import logger
 
 # --- Services ---
 doclayout_service = DocLayoutService()
-ocr_service = DeepSeekOCRService(doclayout_model=doclayout_service.model)
+ocr_service = DeepSeekOCRService()
 
 
 # --- Background keepalive ---
