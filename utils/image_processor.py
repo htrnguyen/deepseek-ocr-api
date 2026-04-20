@@ -1,5 +1,3 @@
-import time
-import os
 import tempfile
 from io import BytesIO
 from PIL import Image, ImageOps, ImageFilter
@@ -72,13 +70,5 @@ class ImageProcessor:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                 tmp_path = tmp.name
                 img.save(tmp_path, format="JPEG", quality=95)
-
-            debug_dir = os.path.join(os.getcwd(), "debug_images")
-            os.makedirs(debug_dir, exist_ok=True)
-            debug_path = os.path.join(
-                debug_dir, f"debug_target_{target}px_{int(time.time())}.jpg"
-            )
-            img.save(debug_path, format="JPEG", quality=95)
-            logger.info(f"[preprocess] | Đã lưu ảnh debug: {debug_path}")
 
             return tmp_path, original_size, scale

@@ -2,8 +2,6 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -120,13 +118,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-
-@app.get("/")
-async def serve_frontend():
-    return FileResponse("static/index.html")
 
 
 @app.post("/ocr")
