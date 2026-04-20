@@ -18,21 +18,32 @@ doclayout_service = DocLayoutService()
 
 # --- Background keepalive ---
 async def _ollama_keepalive_loop():
-    """Ping Ollama every N seconds to keep model loaded and verify responsiveness."""
+    """Ping Ollama every N seconds to verify model is still loaded."""
     import ollama as ollama_client
 
     while True:
         try:
             await asyncio.sleep(settings.OLLAMA_KEEPALIVE_INTERVAL)
             start = time.time()
-            await asyncio.to_thread(
-                ollama_client.chat,
-                model=settings.OLLAMA_MODEL,
-                messages=[{"role": "user", "content": "ping"}],
-                keep_alive=-1,
-            )
+            ps_response = await asyncio.to_thread(ollama_client.ps)
+            running = [m.model for m in getattr(ps_response, "models", [])]
             elapsed = round(time.time() - start, 1)
-            logger.info(f"[keepalive] Ollama OK ({elapsed}s)")
+
+            if any(settings.OLLAMA_MODEL in name for name in running):
+                logger.info(f"[keepalive] Ollama OK — model loaded ({elapsed}s)")
+            else:
+                # Model not in memory — trigger reload
+                logger.warning("[keepalive] Model not loaded — reloading...")
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ollama_client.generate,
+                        model=settings.OLLAMA_MODEL,
+                        prompt="",
+                        keep_alive=-1,
+                    ),
+                    timeout=180,
+                )
+                logger.info("[keepalive] Model reloaded successfully")
         except asyncio.CancelledError:
             logger.info("[keepalive] Task cancelled")
             break
@@ -45,31 +56,38 @@ async def _ollama_keepalive_loop():
 # --- Lifespan (startup + shutdown) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: warmup model + start keepalive. Shutdown: cancel keepalive."""
+    """Startup: verify model + start keepalive. Shutdown: cancel keepalive."""
     import ollama as ollama_client
 
-    # Warmup — pre-load model into memory (with timeout)
-    logger.info("[lifespan] Warming up Ollama model...")
+    # Verify Ollama is running and model exists
+    logger.info("[lifespan] Checking Ollama status...")
     try:
-        await asyncio.wait_for(
-            asyncio.to_thread(
-                ollama_client.chat,
-                model=settings.OLLAMA_MODEL,
-                messages=[{"role": "user", "content": "ping"}],
-                keep_alive=-1,
-            ),
-            timeout=120,  # Max 2 phút cho warmup, nếu lâu hơn = skip
+        ps_response = await asyncio.wait_for(
+            asyncio.to_thread(ollama_client.ps),
+            timeout=10,
         )
-        logger.info("[lifespan] Ollama model loaded and ready")
+        running = [m.model for m in getattr(ps_response, "models", [])]
+        if any(settings.OLLAMA_MODEL in name for name in running):
+            logger.info(f"[lifespan] Ollama ready — model '{settings.OLLAMA_MODEL}' loaded in GPU")
+        else:
+            logger.warning(
+                f"[lifespan] Model '{settings.OLLAMA_MODEL}' not in memory. "
+                f"Loading... (this may take 1-2 min on first run)"
+            )
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    ollama_client.generate,
+                    model=settings.OLLAMA_MODEL,
+                    prompt="",
+                    keep_alive=-1,
+                ),
+                timeout=180,
+            )
+            logger.info("[lifespan] Model loaded successfully")
     except asyncio.TimeoutError:
-        logger.warning(
-            "[lifespan] Warmup timed out after 120s — model may still be loading. "
-            "App will start, keepalive task will retry."
-        )
+        logger.warning("[lifespan] Ollama check timed out — app will start anyway")
     except Exception as e:
-        logger.warning(
-            f"[lifespan] Warmup failed (non-fatal): {type(e).__name__}: {e}"
-        )
+        logger.warning(f"[lifespan] Ollama check failed (non-fatal): {type(e).__name__}: {e}")
 
     # Start background keepalive
     keepalive_task = asyncio.create_task(_ollama_keepalive_loop())
