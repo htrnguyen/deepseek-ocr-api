@@ -1,16 +1,12 @@
 import time
 import os
-import tempfile
 import asyncio
-from io import BytesIO
-from pathlib import Path
 
-from fastapi import HTTPException
-from PIL import Image, ImageOps
 from doclayout_yolo import YOLOv10
 
 from config import settings
 from logger import logger
+from utils.image_processor import ImageProcessor
 
 
 class DocLayoutService:
@@ -19,12 +15,11 @@ class DocLayoutService:
 
     def _load_model(self):
         if self.model is None:
-            logger.info("[detect_figures] Lazy-loading DocLayout-YOLO model...")
+            logger.info("[doclayout_service] Lazy-loading DocLayout-YOLO model...")
             self.model = YOLOv10(settings.DOC_LAYOUT_MODEL_PATH)
-            logger.info("[detect_figures] DocLayout-YOLO model loaded successfully")
+            logger.info("[doclayout_service] DocLayout-YOLO model loaded successfully")
 
     async def detect_figures(self, file_content: bytes, filename: str):
-        # Lazy load model in background thread to avoid blocking event loop
         if self.model is None:
             await asyncio.to_thread(self._load_model)
 
@@ -32,23 +27,13 @@ class DocLayoutService:
         tmp_path = None
 
         try:
-            suffix = Path(filename).suffix.lower()
-            if suffix not in [".jpg", ".jpeg", ".png", ".webp"]:
-                suffix = ".jpg"
+            tmp_path, _ = await asyncio.to_thread(
+                ImageProcessor.preprocess_image, file_content
+            )
 
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            tmp_path = tmp.name
-
-            # Load with PIL to fix EXIF rotation
-            with Image.open(BytesIO(file_content)) as img:
-                img = ImageOps.exif_transpose(img)
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                img.save(tmp_path, format="JPEG", quality=95)
-
-            tmp.close()
-
-            logger.info(f"[detect_figures] DocLayout-YOLO figure detection started - File: {filename}")
+            logger.info(
+                f"[detect_figures] DocLayout-YOLO figure detection started - File: {filename}"
+            )
 
             results = await asyncio.to_thread(
                 self.model.predict, tmp_path, imgsz=1024, conf=0.25, verbose=False

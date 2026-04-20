@@ -1,152 +1,23 @@
 import asyncio
-import re
 import time
 import os
-import tempfile
-from PIL import Image, ImageOps
-from io import BytesIO
 import ollama
 from fastapi import HTTPException
 from config import settings
 from logger import logger
 
-
-class TokenLoopError(Exception):
-    """Raised when repetitive token output is detected during streaming."""
-
-    pass
-
-
-class EmptyOutputError(Exception):
-    """Raised when OCR output is suspiciously short (likely model hallucination)."""
-
-    pass
+from utils.exceptions import TokenLoopError, EmptyOutputError
+from utils.loop_detector import LoopDetector
+from utils.post_processor import OCRPostProcessor
+from utils.image_processor import ImageProcessor
 
 
 class DeepSeekOCRService:
-    """OCR service using DeepSeek model via Ollama with streaming monitoring.
-
-    DeepSeek-OCR uses Dynamic Resolution internally:
-    - Global view: 1×1024×1024 → 256 visual tokens
-    - Local patches: (1-6)×768×768 → (1-6)×144 visual tokens each
-    → We send the ORIGINAL image (EXIF-fixed only) and let the model handle patching.
-
-    Key features:
-    - NO image preprocessing (model handles resolution internally)
-    - Streaming inference with aggressive token loop detection (every 10 tokens)
-    - Auto-retry: grounding mode fails → fallback to "Free OCR."
-    - Post-processing: clean grounding tags from output
-    - keep_alive=-1: model stays loaded permanently
-    """
-
-    # Patterns that indicate a token loop
-    LOOP_PATTERNS = [
-        re.compile(r"(<td>\s*</td>){6,}"),  # Empty table cells
-        re.compile(r"(<tr>\s*</tr>){4,}"),  # Empty table rows
-        re.compile(r"(\|\s*){12,}"),  # Markdown table pipes
-        re.compile(r"(</td><td>){6,}"),  # Alternating td tags
-        re.compile(r"(<td></td>){5,}"),  # Compact empty cells
-    ]
+    """OCR service using DeepSeek model via Ollama with streaming monitoring."""
 
     def __init__(self, doclayout_model=None):
         self.model = settings.OLLAMA_MODEL
         self.doclayout_model = doclayout_model
-
-    def _detect_token_loop(self, tokens: list[str]) -> bool:
-        """Detect repetitive output using 4 strategies.
-
-        Strategy 1: Unique token ratio — catches ANY repetition pattern
-        Strategy 2: Window comparison — exact match of consecutive windows
-        Strategy 3: Character uniqueness + Substring repetition
-        Strategy 4: Regex patterns — known HTML/Markdown loop patterns
-        """
-        if len(tokens) < 20:
-            return False
-
-        # Strategy 1: Unique token ratio (MOST IMPORTANT)
-        window = tokens[-100:] if len(tokens) >= 100 else tokens
-        if len(window) >= 40:
-            unique_ratio = len(set(window)) / len(window)
-            if unique_ratio < 0.25:
-                logger.warning(
-                    f"[loop_detect] Strategy 1 (Unique Ratio): {unique_ratio:.2%} < 25%. "
-                    f"Tokens: {len(set(window))} unique / {len(window)} total. "
-                    f"Sample: {''.join(window[-10:])}"
-                )
-                return True
-
-        # Strategy 2: Window comparison
-        if len(tokens) >= 60:
-            recent = "".join(tokens[-30:])
-            earlier = "".join(tokens[-60:-30])
-            if recent == earlier and len(recent) > 10:
-                logger.warning(
-                    f"[loop_detect] Strategy 2 (Window Match): "
-                    f"30-token window repeated exactly. Match: '{recent[:30]}...'"
-                )
-                return True
-
-        # Strategy 3: Character uniqueness and Exact Substring Repeat
-        recent_text = "".join(tokens[-150:]) if len(tokens) >= 150 else "".join(tokens)
-
-        # 3a. Character uniqueness
-        if len(recent_text) >= 50:
-            unique_chars = len(set(recent_text))
-            if unique_chars < 15:
-                logger.warning(
-                    f"[loop_detect] Strategy 3a (Char Uniqueness): "
-                    f"{unique_chars} unique chars in {len(recent_text)} length text. "
-                    f"Sample: '{recent_text[-30:]}'"
-                )
-                return True
-
-        # 3b. Long Substring Repetition
-        if len(recent_text) >= 60:
-            for p_len in range(15, 40):
-                pattern = recent_text[-p_len:]
-                if recent_text.endswith(pattern * 3):
-                    logger.warning(
-                        f"[loop_detect] Strategy 3b (Substring Repeat): "
-                        f"Pattern '{pattern}' (len {p_len}) repeated 3+ times at end."
-                    )
-                    return True
-
-        # Strategy 4: Known HTML/Markdown patterns
-        for pattern in self.LOOP_PATTERNS:
-            if pattern.search(recent_text):
-                logger.warning(
-                    f"[loop_detect] Strategy 4 (Regex Pattern): "
-                    f"Matched pattern {pattern.pattern} on text: '{recent_text[-40:]}'"
-                )
-                return True
-
-        return False
-
-    @staticmethod
-    def _clean_output(text: str) -> str:
-        """Post-process OCR output to remove grounding artifacts based on official DeepSeek-OCR v2 logic.
-
-        Grounding mode outputs: <|ref|>word<|/ref|><|det|>[[x,y,x,y]]<|/det|>
-        """
-        if not text:
-            return ""
-
-        # Remove <|ref|>...<|/ref|><|det|>...<|/det|> entirely if it references an 'image'
-        # Otherwise, remove the grounding line
-        pattern = r"(<\|ref\|>(.*?)<\|/ref\|><\|det\|>(.*?)<\|/det\|>)"
-        matches = re.findall(pattern, text, re.DOTALL)
-
-        for match in matches:
-            if "<|ref|>image<|/ref|>" in match[0]:
-                text = text.replace(match[0], "", 1)
-            else:
-                # Remove the exact matched line
-                text = re.sub(rf"(?m)^[^\n]*{re.escape(match[0])}[^\n]*\n?", "", text)
-
-        # Replace mathematical symbols
-        text = text.replace("\\coloneqq", ":=").replace("\\eqqcolon", "=:")
-
-        return text.strip()
 
     def _call_ollama_streaming(
         self,
@@ -154,10 +25,7 @@ class DeepSeekOCRService:
         prompt: str,
         ollama_options: dict,
     ) -> dict:
-        """Blocking call to Ollama with streaming and aggressive loop monitoring.
-
-        Checks every 10 tokens. Raises TokenLoopError on detection.
-        """
+        """Blocking call to Ollama with streaming and aggressive loop monitoring."""
         tokens: list[str] = []
         stream_start = time.time()
         first_token_time = None
@@ -183,7 +51,6 @@ class DeepSeekOCRService:
                 if token:
                     tokens.append(token)
 
-                    # Log first token timing (prompt eval duration)
                     if first_token_time is None:
                         first_token_time = time.time()
                         eval_time = round(first_token_time - stream_start, 1)
@@ -191,7 +58,6 @@ class DeepSeekOCRService:
                             f"[streaming] First token after {eval_time}s (prompt eval)"
                         )
 
-                # Progress log every 50 tokens
                 if len(tokens) > 0 and len(tokens) % 50 == 0:
                     elapsed = round(time.time() - stream_start, 1)
                     preview = "".join(tokens[-20:])[:80]
@@ -200,9 +66,8 @@ class DeepSeekOCRService:
                         f"{elapsed}s | Last: '{preview}'"
                     )
 
-                # Check for token loop every 10 tokens (aggressive)
                 if len(tokens) >= 20 and len(tokens) % 10 == 0:
-                    if self._detect_token_loop(tokens):
+                    if LoopDetector.detect(tokens):
                         elapsed = round(time.time() - stream_start, 1)
                         full_output = "".join(tokens)
                         logger.warning(
@@ -214,13 +79,9 @@ class DeepSeekOCRService:
                             f"  {full_output[:500]}\n"
                             f"  ──────────────────────────────────────"
                         )
-                        # Ensure we close the generator so Ollama cancels the task immediately
                         if hasattr(stream, "close"):
                             stream.close()
 
-                        # Partial Success Strategy
-                        # If the model generated a substantial amount of valid text before looping,
-                        # we cut off the last 100 tokens (the evaluation window) and return the rest.
                         valid_tokens = tokens[:-100] if len(tokens) > 100 else []
                         if len(valid_tokens) >= 50:
                             logger.info(
@@ -240,7 +101,6 @@ class DeepSeekOCRService:
                     response_meta = chunk
 
         except ollama.ResponseError as e:
-            # Ollama's built-in loop detection throws this error
             if "looping" in str(e).lower():
                 elapsed = round(time.time() - stream_start, 1)
                 full_output = "".join(tokens)
@@ -264,13 +124,18 @@ class DeepSeekOCRService:
                         f"valid tokens before Ollama's built-in loop error."
                     )
                     tokens = valid_tokens
-                    response_meta["eval_count"] = len(tokens)
-                    pass
+                    return {
+                        "text": "".join(tokens),
+                        "prompt_eval_count": response_meta.get("prompt_eval_count", 0)
+                        or 0,
+                        "eval_count": len(tokens),
+                    }
                 else:
                     raise TokenLoopError(
                         f"Ollama loop detection after {len(tokens)} tokens ({elapsed}s)"
                     )
-            raise  # Re-raise non-loop errors
+            raise
+
         except Exception:
             if hasattr(stream, "close"):
                 stream.close()
@@ -278,7 +143,6 @@ class DeepSeekOCRService:
 
         full_text = "".join(tokens)
 
-        # Post-generation loop check: if hit num_predict exactly, likely a loop
         eval_count = response_meta.get("eval_count", 0) or 0
         if eval_count >= settings.OLLAMA_NUM_PREDICT - 10:
             raise TokenLoopError(
@@ -333,7 +197,7 @@ class DeepSeekOCRService:
         ollama_time = round(time.time() - ollama_start, 3)
 
         # Post-process
-        result_text = self._clean_output(result["text"]).strip()
+        result_text = OCRPostProcessor.clean(result["text"])
         prompt_tokens = result["prompt_eval_count"]
         response_tokens = result["eval_count"]
         total_tokens = prompt_tokens + response_tokens
@@ -347,7 +211,6 @@ class DeepSeekOCRService:
             f"  Preview: '{result_text[:200]}'"
         )
 
-        # Guard: if output is suspiciously short, it's likely hallucination
         if not result_text or (len(result_text) < 20 and response_tokens < 50):
             logger.warning(
                 f"[process] EmptyOutput: only {len(result_text)} chars / "
@@ -374,14 +237,7 @@ class DeepSeekOCRService:
         filename: str,
         prompt: str,
     ) -> dict:
-        """Process an image through DeepSeek OCR.
-
-        Pipeline: Open → EXIF Transpose → RGB → Save JPEG → OCR
-        NO resize/enhance — DeepSeek handles Dynamic Resolution internally
-        (Global 1024×1024 + Local patches 768×768, 1-6 patches).
-
-        Auto-retry: if grounding mode fails, fallback to "Free OCR." prompt.
-        """
+        """Process an image through DeepSeek OCR."""
         start_time = time.time()
         tmp_path = None
 
@@ -389,32 +245,9 @@ class DeepSeekOCRService:
 
         try:
             preprocess_start = time.time()
-            with Image.open(BytesIO(file_content)) as img:
-                # Step 1: Fix EXIF rotation (smartphone photos)
-                img = ImageOps.exif_transpose(img)
-
-                original_size = img.size
-                logger.info(
-                    f"[process] Image: {original_size[0]}x{original_size[1]} | "
-                    f"Mode: {img.mode} | Size: {len(file_content) / 1024:.1f} KB"
-                )
-
-                # Step 2: Convert to RGB (required for JPEG save)
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                MAX_SIZE = 1024
-                if max(img.size) > MAX_SIZE:
-                    ratio = MAX_SIZE / max(img.size)
-                    new_size = (int(img.width * ratio), int(img.height * ratio))
-                    logger.info(
-                        f"[process] Resizing from {img.size} to {new_size} (LANCZOS)"
-                    )
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-
-                # Step 4: Save as JPEG (Ollama needs a file path)
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                    tmp_path = tmp.name
-                    img.save(tmp_path, format="JPEG", quality=95)
+            tmp_path, original_size = await asyncio.to_thread(
+                ImageProcessor.preprocess_image, file_content
+            )
 
             preprocess_time = round(time.time() - preprocess_start, 3)
             saved_size = os.path.getsize(tmp_path) / 1024
@@ -423,7 +256,6 @@ class DeepSeekOCRService:
                 f"Saved: {saved_size:.1f} KB | Time: {preprocess_time}s"
             )
 
-            # --- Attempt 1: Original prompt ---
             try:
                 return await self._process_single(
                     tmp_path,
@@ -442,14 +274,12 @@ class DeepSeekOCRService:
                     f"{type(first_error).__name__}"
                 )
 
-                # Build fallback prompt chain (skip current prompt)
                 fallback_prompts = []
                 if prompt != settings.PROMPT_GENERAL_OCR:
                     fallback_prompts.append(settings.PROMPT_GENERAL_OCR)
                 if prompt != settings.PROMPT_FREE_OCR:
                     fallback_prompts.append(settings.PROMPT_FREE_OCR)
 
-                # --- Attempt 2 & 3: Fallback prompts ---
                 for i, fallback_prompt in enumerate(fallback_prompts, start=2):
                     try:
                         logger.warning(
@@ -476,9 +306,8 @@ class DeepSeekOCRService:
                             f"prompt='{fallback_prompt}' | "
                             f"{type(retry_error).__name__}: {retry_error}"
                         )
-                        continue  # Try next fallback
+                        continue
 
-                # All attempts failed
                 self._raise_http_error(first_error, filename, start_time)
 
         finally:

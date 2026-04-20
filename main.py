@@ -9,17 +9,15 @@ from config import settings
 from ocr_service import DeepSeekOCRService
 from doclayout_service import DocLayoutService
 from logger import logger
+import ollama as ollama_client
 
 
-# --- Services ---
 doclayout_service = DocLayoutService()
 ocr_service = DeepSeekOCRService()
 
 
-# --- Background keepalive ---
 async def _ollama_keepalive_loop():
     """Ping Ollama every N seconds to verify model is still loaded."""
-    import ollama as ollama_client
 
     while True:
         try:
@@ -32,7 +30,6 @@ async def _ollama_keepalive_loop():
             if any(settings.OLLAMA_MODEL in name for name in running):
                 logger.info(f"[keepalive] Ollama OK — model loaded ({elapsed}s)")
             else:
-                # Model not in memory — trigger reload
                 logger.warning("[keepalive] Model not loaded — reloading...")
                 await asyncio.wait_for(
                     asyncio.to_thread(
@@ -49,18 +46,13 @@ async def _ollama_keepalive_loop():
             logger.info("[keepalive] Task cancelled")
             break
         except Exception as e:
-            logger.error(
-                f"[keepalive] Ollama FAILED: {type(e).__name__}: {e}"
-            )
+            logger.error(f"[keepalive] Ollama FAILED: {type(e).__name__}: {e}")
 
 
-# --- Lifespan (startup + shutdown) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: verify model + start keepalive. Shutdown: cancel keepalive."""
-    import ollama as ollama_client
 
-    # Verify Ollama is running and model exists
     logger.info("[lifespan] Checking Ollama status...")
     try:
         ps_response = await asyncio.wait_for(
@@ -69,7 +61,9 @@ async def lifespan(app: FastAPI):
         )
         running = [m.model for m in getattr(ps_response, "models", [])]
         if any(settings.OLLAMA_MODEL in name for name in running):
-            logger.info(f"[lifespan] Ollama ready — model '{settings.OLLAMA_MODEL}' loaded in GPU")
+            logger.info(
+                f"[lifespan] Ollama ready — model '{settings.OLLAMA_MODEL}' loaded in GPU"
+            )
         else:
             logger.warning(
                 f"[lifespan] Model '{settings.OLLAMA_MODEL}' not in memory. "
@@ -89,9 +83,10 @@ async def lifespan(app: FastAPI):
     except asyncio.TimeoutError:
         logger.warning("[lifespan] Ollama check timed out — app will start anyway")
     except Exception as e:
-        logger.warning(f"[lifespan] Ollama check failed (non-fatal): {type(e).__name__}: {e}")
+        logger.warning(
+            f"[lifespan] Ollama check failed (non-fatal): {type(e).__name__}: {e}"
+        )
 
-    # Start background keepalive
     keepalive_task = asyncio.create_task(_ollama_keepalive_loop())
     logger.info(
         f"[lifespan] Keepalive started "
@@ -100,7 +95,6 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
     keepalive_task.cancel()
     try:
         await keepalive_task
@@ -109,7 +103,6 @@ async def lifespan(app: FastAPI):
     logger.info("[lifespan] Shutdown complete")
 
 
-# --- App ---
 app = FastAPI(title="DeepSeek OCR API", version="2.4", lifespan=lifespan)
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -117,7 +110,7 @@ app.state.limiter = limiter
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,  # credentials + wildcard is invalid per CORS spec
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -168,11 +161,9 @@ async def health():
     """Health check with Ollama model status."""
     ollama_status = "unknown"
     try:
-        import ollama as ollama_client
+
         ps_response = await asyncio.to_thread(ollama_client.ps)
-        running_models = [
-            m.model for m in getattr(ps_response, "models", [])
-        ]
+        running_models = [m.model for m in getattr(ps_response, "models", [])]
         if any(settings.OLLAMA_MODEL in name for name in running_models):
             ollama_status = "model_loaded"
         else:
