@@ -1,6 +1,6 @@
 import tempfile
 from io import BytesIO
-from PIL import Image, ImageOps, ImageFilter
+from PIL import Image, ImageOps
 from logger import logger
 
 
@@ -54,15 +54,11 @@ class ImageProcessor:
             if max(img.size) > target:
                 scale = target / max(img.size)
                 logger.info(
-                    f"[preprocess] | Resizing (Thumbnail + UnsharpMask) | "
+                    f"[preprocess] | Resizing | "
                     f"From: {img.size} | Target Max Side: {target}px | Scale: {scale:.3f}"
                 )
 
-                img.thumbnail((target, target), Image.Resampling.LANCZOS)
-
-                img = img.filter(
-                    ImageFilter.UnsharpMask(radius=1.5, percent=70, threshold=3)
-                )
+                img.thumbnail((target, target), Image.Resampling.BICUBIC)
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                 tmp_path = tmp.name

@@ -182,7 +182,9 @@ class DeepSeekOCRService:
         )
 
         ollama_start = time.time()
-        logger.info(f"[process] | [Step 3/3] Sending streaming request to Ollama | File: {filename}")
+        logger.info(
+            f"[process] | [Step 3/3] Sending streaming request to Ollama | File: {filename}"
+        )
 
         result = await asyncio.wait_for(
             asyncio.to_thread(
@@ -238,14 +240,21 @@ class DeepSeekOCRService:
         filename: str,
         prompt: str,
     ) -> dict:
-        """Process an image through DeepSeek OCR with progressive downscale retry."""
+        """Process an image through DeepSeek OCR with smart fallback strategies."""
         start_time = time.time()
         last_error = None
 
         logger.info(f"[process] | [Step 1/3] Pipeline Started | File: {filename}")
 
-        for attempt, max_size in enumerate(ImageProcessor.RETRY_SIZES, start=1):
+        strategies = [
+            {"max_size": size, "prompt": prompt} for size in ImageProcessor.RETRY_SIZES
+        ]
+
+        for attempt, strategy in enumerate(strategies, start=1):
+            max_size = strategy["max_size"]
+            current_prompt = strategy["prompt"]
             tmp_path = None
+
             try:
                 try:
                     tmp_path, original_size, _ = await asyncio.to_thread(
@@ -271,22 +280,24 @@ class DeepSeekOCRService:
                     tmp_path,
                     original_size,
                     filename,
-                    prompt,
+                    current_prompt,
                     start_time,
                 )
 
                 if attempt > 1:
                     result["retried"] = True
                     result["retry_attempt"] = attempt
-                    result["retry_max_size"] = max_size
+                    result["retry_strategy"] = (
+                        f"size:{max_size}px,prompt:{current_prompt}"
+                    )
 
                 return result
 
             except (TokenLoopError, asyncio.TimeoutError, EmptyOutputError) as e:
                 last_error = e
                 logger.warning(
-                    f"[process] | Attempt {attempt}/{len(ImageProcessor.RETRY_SIZES)} FAILED | "
-                    f"File: {filename} | Target: {max_size}px | "
+                    f"[process] | Attempt {attempt}/{len(strategies)} FAILED | "
+                    f"File: {filename} | Target: {max_size}px | Prompt: '{current_prompt}' | "
                     f"Error: {type(e).__name__}"
                 )
 
