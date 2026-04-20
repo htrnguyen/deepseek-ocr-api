@@ -33,18 +33,18 @@ def enhance_for_ocr(
         original_resolution: Original (width, height) before any resize.
             If None, uses current image size.
     """
-    ref_w, ref_h = original_resolution or image.size
-    longest_side = max(ref_w, ref_h)
+    # Use the current image size (after resize) to determine sharpness
+    longest_side = max(image.size)
 
     # Contrast boost — mild, always helpful
     contrast_enhancer = ImageEnhance.Contrast(image)
     image = contrast_enhancer.enhance(1.3)
 
-    if longest_side < 2000:
-        # Low-res: needs sharpness help
+    # If the CURRENT image is < 2000px (which it usually is after auto_resize_image),
+    # apply sharpness to recover details lost during downscaling.
+    if longest_side <= 2048:
         sharpness_enhancer = ImageEnhance.Sharpness(image)
         image = sharpness_enhancer.enhance(1.5)
-    # else: High-res — skip sharpening to avoid artifacts
 
     return image
 
@@ -102,8 +102,10 @@ def smart_crop_content_region(
 
     try:
         predict_start = time.time()
+        # Lower conf to 0.05: We'd rather false-positive a text region (larger crop)
+        # than false-negative and chop off faint handwriting on grid paper!
         results = doclayout_model.predict(
-            tmp_path, imgsz=1024, conf=0.2, verbose=False
+            tmp_path, imgsz=1024, conf=0.05, verbose=False
         )
         predict_time = round(time.time() - predict_start, 3)
         logger.info(f"[smart_crop] DocLayout predict: {predict_time}s")
@@ -196,15 +198,20 @@ def smart_crop_content_region(
         f"Content ratio: {content_ratio:.1%} of {img_w}x{img_h}"
     )
 
-    # Skip crop if content already fills most of image
+    # Skip crop if content fills most of image
     if content_ratio >= min_content_ratio:
         crop_info["skip_reason"] = (
-            f"Content ratio {content_ratio:.0%} >= {min_content_ratio:.0%}"
+            f"Content ratio {content_ratio:.0%} >= {min_content_ratio:.0%} (too large)"
         )
-        logger.info(
-            f"[smart_crop] SKIP crop — content {content_ratio:.0%} >= "
-            f"threshold {min_content_ratio:.0%}"
+        logger.info(f"[smart_crop] SKIP crop — {crop_info['skip_reason']}")
+        return image, crop_info
+
+    # Skip crop if content is suspiciously tiny (likely missed faint handwriting)
+    if content_ratio < 0.02:
+        crop_info["skip_reason"] = (
+            f"Content ratio {content_ratio:.1%} < 2% (dangerously small, likely missed text)"
         )
+        logger.info(f"[smart_crop] SKIP crop — {crop_info['skip_reason']}")
         return image, crop_info
 
     # Apply padding

@@ -304,26 +304,8 @@ class DeepSeekOCRService:
                 # Step 2: Enhance (Contrast + Sharpness)
                 img = enhance_for_ocr(img, original_resolution=original_size)
 
-                # Step 3: Smart Crop on enhanced image
-                # Much higher chance for YOLO to detect text on sharp, resized image
-                crop_info = {"cropped": False}
-                if self.doclayout_model is not None:
-                    img, crop_info = smart_crop_content_region(
-                        img, self.doclayout_model
-                    )
-                    if crop_info["cropped"]:
-                        logger.info(
-                            f"[process] Smart crop: {crop_info['original_size']} → "
-                            f"{crop_info['cropped_size']} | "
-                            f"Regions: {crop_info['detected_regions']} "
-                            f"({', '.join(crop_info['region_labels'])})"
-                        )
-                    else:
-                        logger.info(
-                            f"[process] Smart crop: skipped "
-                            f"({crop_info.get('skip_reason', 'no regions')} | "
-                            f"Regions: {crop_info.get('detected_regions', 0)})"
-                        )
+                # Bỏ qua Smart Crop theo yêu cầu để lấy toàn bộ trang giấy
+                crop_info = {"cropped": False, "skip_reason": "Disabled by user"}
 
                 processed_size = img.size
                 save_quality = calculate_save_quality(len(file_content), processed_size)
