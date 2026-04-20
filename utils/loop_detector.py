@@ -24,8 +24,8 @@ class LoopDetector:
             unique_ratio = len(set(window)) / len(window)
             if unique_ratio < 0.25:
                 logger.warning(
-                    f"[loop_detect] Strategy 1 (Unique Ratio): {unique_ratio:.2%} < 25%. "
-                    f"Tokens: {len(set(window))} unique / {len(window)} total. "
+                    f"[loop_detect] Strategy 1 (Unique Ratio) | {unique_ratio:.2%} < 25% | "
+                    f"Tokens: {len(set(window))}/{len(window)} | "
                     f"Sample: {''.join(window[-10:])}"
                 )
                 return True
@@ -35,8 +35,8 @@ class LoopDetector:
             earlier = "".join(tokens[-60:-30])
             if recent == earlier and len(recent) > 10:
                 logger.warning(
-                    f"[loop_detect] Strategy 2 (Window Match): "
-                    f"30-token window repeated exactly. Match: '{recent[:30]}...'"
+                    f"[loop_detect] Strategy 2 (Window Match) | "
+                    f"30-token window repeated | Match: '{recent[:30]}...'"
                 )
                 return True
 
@@ -46,8 +46,8 @@ class LoopDetector:
             unique_chars = len(set(recent_text))
             if unique_chars < 15:
                 logger.warning(
-                    f"[loop_detect] Strategy 3a (Char Uniqueness): "
-                    f"{unique_chars} unique chars in {len(recent_text)} length text. "
+                    f"[loop_detect] Strategy 3a (Char Uniqueness) | "
+                    f"Chars: {unique_chars}/{len(recent_text)} | "
                     f"Sample: '{recent_text[-30:]}'"
                 )
                 return True
@@ -57,16 +57,16 @@ class LoopDetector:
                 pattern = recent_text[-p_len:]
                 if recent_text.endswith(pattern * 3):
                     logger.warning(
-                        f"[loop_detect] Strategy 3b (Substring Repeat): "
-                        f"Pattern '{pattern}' (len {p_len}) repeated 3+ times at end."
+                        f"[loop_detect] Strategy 3b (Substring Repeat) | "
+                        f"Pattern: '{pattern}' (len {p_len}) repeated 3+ times"
                     )
                     return True
 
         for pattern in cls.LOOP_PATTERNS:
             if pattern.search(recent_text):
                 logger.warning(
-                    f"[loop_detect] Strategy 4 (Regex Pattern): "
-                    f"Matched pattern {pattern.pattern} on text: '{recent_text[-40:]}'"
+                    f"[loop_detect] Strategy 4 (Regex Pattern) | "
+                    f"Match: {pattern.pattern} | Text: '{recent_text[-40:]}'"
                 )
                 return True
 

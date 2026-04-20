@@ -28,9 +28,9 @@ async def _ollama_keepalive_loop():
             elapsed = round(time.time() - start, 1)
 
             if any(settings.OLLAMA_MODEL in name for name in running):
-                logger.info(f"[keepalive] Ollama OK — model loaded ({elapsed}s)")
+                logger.info(f"[keepalive] | Ollama OK | Model loaded | Time: {elapsed}s")
             else:
-                logger.warning("[keepalive] Model not loaded — reloading...")
+                logger.warning("[keepalive] | Model not loaded | Reloading...")
                 await asyncio.wait_for(
                     asyncio.to_thread(
                         ollama_client.generate,
@@ -41,19 +41,19 @@ async def _ollama_keepalive_loop():
                     ),
                     timeout=180,
                 )
-                logger.info("[keepalive] Model reloaded successfully")
+                logger.info("[keepalive] | Model reloaded successfully")
         except asyncio.CancelledError:
-            logger.info("[keepalive] Task cancelled")
+            logger.info("[keepalive] | Task cancelled")
             break
         except Exception as e:
-            logger.error(f"[keepalive] Ollama FAILED: {type(e).__name__}: {e}")
+            logger.error(f"[keepalive] | Ollama FAILED | Error: {type(e).__name__}: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: verify model + start keepalive. Shutdown: cancel keepalive."""
 
-    logger.info("[lifespan] Checking Ollama status...")
+    logger.info("[lifespan] | Checking Ollama status...")
     try:
         ps_response = await asyncio.wait_for(
             asyncio.to_thread(ollama_client.ps),
@@ -62,11 +62,11 @@ async def lifespan(app: FastAPI):
         running = [m.model for m in getattr(ps_response, "models", [])]
         if any(settings.OLLAMA_MODEL in name for name in running):
             logger.info(
-                f"[lifespan] Ollama ready — model '{settings.OLLAMA_MODEL}' loaded in GPU"
+                f"[lifespan] | Ollama ready | Model '{settings.OLLAMA_MODEL}' loaded in GPU"
             )
         else:
             logger.warning(
-                f"[lifespan] Model '{settings.OLLAMA_MODEL}' not in memory. "
+                f"[lifespan] | Model '{settings.OLLAMA_MODEL}' not in memory | "
                 f"Loading... (this may take 1-2 min on first run)"
             )
             await asyncio.wait_for(
@@ -79,18 +79,18 @@ async def lifespan(app: FastAPI):
                 ),
                 timeout=180,
             )
-            logger.info("[lifespan] Model loaded successfully")
+            logger.info("[lifespan] | Model loaded successfully")
     except asyncio.TimeoutError:
-        logger.warning("[lifespan] Ollama check timed out — app will start anyway")
+        logger.warning("[lifespan] | Ollama check timed out | App will start anyway")
     except Exception as e:
         logger.warning(
-            f"[lifespan] Ollama check failed (non-fatal): {type(e).__name__}: {e}"
+            f"[lifespan] | Ollama check failed (non-fatal) | Error: {type(e).__name__}: {e}"
         )
 
     keepalive_task = asyncio.create_task(_ollama_keepalive_loop())
     logger.info(
-        f"[lifespan] Keepalive started "
-        f"(interval: {settings.OLLAMA_KEEPALIVE_INTERVAL}s)"
+        f"[lifespan] | Keepalive started | "
+        f"Interval: {settings.OLLAMA_KEEPALIVE_INTERVAL}s"
     )
 
     yield
@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
         await keepalive_task
     except asyncio.CancelledError:
         pass
-    logger.info("[lifespan] Shutdown complete")
+    logger.info("[lifespan] | Shutdown complete")
 
 
 app = FastAPI(title="DeepSeek OCR API", version="2.4", lifespan=lifespan)

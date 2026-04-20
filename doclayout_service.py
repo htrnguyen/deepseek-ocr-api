@@ -3,6 +3,7 @@ import os
 import asyncio
 
 from doclayout_yolo import YOLOv10
+from fastapi import HTTPException
 
 from config import settings
 from logger import logger
@@ -15,9 +16,11 @@ class DocLayoutService:
 
     def _load_model(self):
         if self.model is None:
-            logger.info("[doclayout_service] Lazy-loading DocLayout-YOLO model...")
+            logger.info("[doclayout_service] | Lazy-loading DocLayout-YOLO model")
             self.model = YOLOv10(settings.DOC_LAYOUT_MODEL_PATH)
-            logger.info("[doclayout_service] DocLayout-YOLO model loaded successfully")
+            logger.info(
+                "[doclayout_service] | DocLayout-YOLO model loaded successfully"
+            )
 
     async def detect_figures(self, file_content: bytes, filename: str):
         if self.model is None:
@@ -27,13 +30,17 @@ class DocLayoutService:
         tmp_path = None
 
         try:
-            tmp_path, _ = await asyncio.to_thread(
-                ImageProcessor.preprocess_image, file_content
-            )
+            try:
+                tmp_path, original_size, scale = await asyncio.to_thread(
+                    ImageProcessor.preprocess_image, file_content
+                )
+            except ValueError as e:
+                logger.warning(
+                    f"[detect_figures] | Image Rejected | File: {filename} | {e}"
+                )
+                raise HTTPException(status_code=400, detail=str(e))
 
-            logger.info(
-                f"[detect_figures] DocLayout-YOLO figure detection started - File: {filename}"
-            )
+            logger.info(f"[detect_figures] | DocLayout-YOLO started | File: {filename}")
 
             results = await asyncio.to_thread(
                 self.model.predict, tmp_path, imgsz=1024, conf=0.25, verbose=False
@@ -48,7 +55,13 @@ class DocLayoutService:
                         figure_boxes = result.boxes.xyxy[figure_mask].cpu().numpy()
                         figure_conf = result.boxes.conf[figure_mask].cpu().numpy()
                         for box, conf in zip(figure_boxes, figure_conf):
-                            x1, y1, x2, y2 = map(int, box)
+                            x1_r, y1_r, x2_r, y2_r = map(int, box)
+
+                            x1 = int(x1_r / scale)
+                            y1 = int(y1_r / scale)
+                            x2 = int(x2_r / scale)
+                            y2 = int(y2_r / scale)
+
                             image_regions.append(
                                 {
                                     "label": "image",
@@ -61,7 +74,8 @@ class DocLayoutService:
 
             process_time = round(time.time() - start_time, 3)
             logger.info(
-                f"[detect_figures] DocLayout-YOLO completed in {process_time}s - Found {len(image_regions)} figure(s)"
+                f"[detect_figures] | DocLayout-YOLO completed | "
+                f"Time: {process_time}s | Found: {len(image_regions)} figure(s)"
             )
 
             return {

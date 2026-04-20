@@ -55,15 +55,15 @@ class DeepSeekOCRService:
                         first_token_time = time.time()
                         eval_time = round(first_token_time - stream_start, 1)
                         logger.info(
-                            f"[streaming] First token after {eval_time}s (prompt eval)"
+                            f"[streaming] | First token | Time: {eval_time}s (prompt eval)"
                         )
 
                 if len(tokens) > 0 and len(tokens) % 50 == 0:
                     elapsed = round(time.time() - stream_start, 1)
                     preview = "".join(tokens[-20:])[:80]
                     logger.info(
-                        f"[streaming] Progress: {len(tokens)} tokens | "
-                        f"{elapsed}s | Last: '{preview}'"
+                        f"[streaming] | Progress: {len(tokens)} tokens | "
+                        f"Time: {elapsed}s | Last: '{preview}'"
                     )
 
                 if len(tokens) >= 20 and len(tokens) % 10 == 0:
@@ -85,8 +85,8 @@ class DeepSeekOCRService:
                         valid_tokens = tokens[:-100] if len(tokens) > 100 else []
                         if len(valid_tokens) >= 50:
                             logger.info(
-                                f"[loop_detect] Partial success: Recovered {len(valid_tokens)} "
-                                f"valid tokens before the loop."
+                                f"[loop_detect] | Partial Success | Recovered {len(valid_tokens)} "
+                                f"valid tokens before the loop"
                             )
                             tokens = valid_tokens
                             response_meta["eval_count"] = len(tokens)
@@ -120,8 +120,8 @@ class DeepSeekOCRService:
                 valid_tokens = tokens[:-100] if len(tokens) > 100 else []
                 if len(valid_tokens) >= 50:
                     logger.info(
-                        f"[loop_detect] Partial success: Recovered {len(valid_tokens)} "
-                        f"valid tokens before Ollama's built-in loop error."
+                        f"[loop_detect] | Partial Success | Recovered {len(valid_tokens)} "
+                        f"valid tokens before Ollama's built-in loop error"
                     )
                     tokens = valid_tokens
                     return {
@@ -176,13 +176,13 @@ class DeepSeekOCRService:
         }
 
         logger.info(
-            f"[process] Ollama: model={self.model} | prompt='{prompt}' | "
-            f"timeout={settings.OLLAMA_TIMEOUT}s | "
-            f"repeat_penalty={ollama_options['repeat_penalty']}"
+            f"[process] | Ollama Config | File: {filename} | Model: {self.model} | "
+            f"Prompt: '{prompt}' | Timeout: {settings.OLLAMA_TIMEOUT}s | "
+            f"Repeat Penalty: {ollama_options['repeat_penalty']}"
         )
 
         ollama_start = time.time()
-        logger.info("[process] Sending streaming request to Ollama...")
+        logger.info(f"[process] | [Step 3/3] Sending streaming request to Ollama | File: {filename}")
 
         result = await asyncio.wait_for(
             asyncio.to_thread(
@@ -205,7 +205,8 @@ class DeepSeekOCRService:
         token_speed = round(response_tokens / ollama_time, 1) if ollama_time > 0 else 0
 
         logger.info(
-            f"[process] ✅ OCR done | Total: {total_time}s | Ollama: {ollama_time}s | "
+            f"[process] | Pipeline Completed | File: {filename} | Total Time: {total_time}s | "
+            f"Ollama Time: {ollama_time}s | "
             f"Tokens: {prompt_tokens}p + {response_tokens}r = {total_tokens} | "
             f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars\n"
             f"  Preview: '{result_text[:200]}'"
@@ -213,8 +214,8 @@ class DeepSeekOCRService:
 
         if not result_text or (len(result_text) < 20 and response_tokens < 50):
             logger.warning(
-                f"[process] EmptyOutput: only {len(result_text)} chars / "
-                f"{response_tokens} tokens — likely hallucination"
+                f"[process] | EmptyOutput | File: {filename} | {len(result_text)} chars | "
+                f"{response_tokens} tokens | Likely hallucination"
             )
             raise EmptyOutputError(
                 f"Output too short or empty: {len(result_text)} chars, "
@@ -241,18 +242,25 @@ class DeepSeekOCRService:
         start_time = time.time()
         tmp_path = None
 
-        logger.info(f"[process] OCR start | File: {filename}")
+        logger.info(f"[process] | [Step 1/3] Pipeline Started | File: {filename}")
 
         try:
             preprocess_start = time.time()
-            tmp_path, original_size = await asyncio.to_thread(
-                ImageProcessor.preprocess_image, file_content
-            )
+            try:
+                tmp_path, original_size, _ = await asyncio.to_thread(
+                    ImageProcessor.preprocess_image, file_content
+                )
+            except ValueError as e:
+                logger.warning(
+                    f"[process] | Image Rejected | File: {filename} | {e}"
+                )
+                raise HTTPException(status_code=400, detail=str(e))
 
             preprocess_time = round(time.time() - preprocess_start, 3)
             saved_size = os.path.getsize(tmp_path) / 1024
             logger.info(
-                f"[process] Prepared: {original_size[0]}x{original_size[1]} | "
+                f"[process] | [Step 2/3] Image Prepared | File: {filename} | "
+                f"Size: {original_size[0]}x{original_size[1]} | "
                 f"Saved: {saved_size:.1f} KB | Time: {preprocess_time}s"
             )
 
@@ -270,8 +278,8 @@ class DeepSeekOCRService:
                 EmptyOutputError,
             ) as first_error:
                 logger.warning(
-                    f"[process] ⚠️ Attempt 1 FAILED | prompt='{prompt}' | "
-                    f"{type(first_error).__name__}"
+                    f"[process] | Attempt 1 FAILED | File: {filename} | "
+                    f"Prompt: '{prompt}' | Error: {type(first_error).__name__}"
                 )
 
                 fallback_prompts = []
@@ -283,7 +291,8 @@ class DeepSeekOCRService:
                 for i, fallback_prompt in enumerate(fallback_prompts, start=2):
                     try:
                         logger.warning(
-                            f"[process] RETRY #{i} | Trying '{fallback_prompt}'..."
+                            f"[process] | RETRY #{i} | File: {filename} | "
+                            f"Trying '{fallback_prompt}'..."
                         )
                         result = await self._process_single(
                             tmp_path,
@@ -302,9 +311,9 @@ class DeepSeekOCRService:
                         EmptyOutputError,
                     ) as retry_error:
                         logger.error(
-                            f"[process] ❌ Attempt {i} FAILED | "
-                            f"prompt='{fallback_prompt}' | "
-                            f"{type(retry_error).__name__}: {retry_error}"
+                            f"[process] | Attempt {i} FAILED | File: {filename} | "
+                            f"Prompt: '{fallback_prompt}' | "
+                            f"Error: {type(retry_error).__name__}: {retry_error}"
                         )
                         continue
 
