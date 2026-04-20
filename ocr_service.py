@@ -20,6 +20,7 @@ from logger import logger
 
 class TokenLoopError(Exception):
     """Raised when repetitive token output is detected during streaming."""
+
     pass
 
 
@@ -35,11 +36,11 @@ class DeepSeekOCRService:
 
     # Patterns that indicate a token loop
     LOOP_PATTERNS = [
-        re.compile(r"(<td>\s*</td>){6,}"),              # Empty table cells
-        re.compile(r"(<tr>\s*</tr>){4,}"),               # Empty table rows
-        re.compile(r"(\|\s*){12,}"),                     # Markdown table pipes
-        re.compile(r"(</td><td>){6,}"),                  # Alternating td tags
-        re.compile(r"(<td></td>){5,}"),                  # Compact empty cells
+        re.compile(r"(<td>\s*</td>){6,}"),  # Empty table cells
+        re.compile(r"(<tr>\s*</tr>){4,}"),  # Empty table rows
+        re.compile(r"(\|\s*){12,}"),  # Markdown table pipes
+        re.compile(r"(</td><td>){6,}"),  # Alternating td tags
+        re.compile(r"(<td></td>){5,}"),  # Compact empty cells
     ]
 
     def __init__(self, doclayout_model=None):
@@ -62,8 +63,10 @@ class DeepSeekOCRService:
         window = tokens[-100:] if len(tokens) >= 100 else tokens
         if len(window) >= 40:
             unique_ratio = len(set(window)) / len(window)
-            if unique_ratio < 0.25: # Relaxed from 0.2
-                logger.warning(f"[loop_detect] Strategy 1 (Unique Ratio): {unique_ratio:.2%} < 25%. Tokens: {len(set(window))} unique / {len(window)} total. Sample: {''.join(window[-10:])}")
+            if unique_ratio < 0.25:  # Relaxed from 0.2
+                logger.warning(
+                    f"[loop_detect] Strategy 1 (Unique Ratio): {unique_ratio:.2%} < 25%. Tokens: {len(set(window))} unique / {len(window)} total. Sample: {''.join(window[-10:])}"
+                )
                 return True
 
         # Strategy 2: Window comparison
@@ -71,19 +74,23 @@ class DeepSeekOCRService:
             recent = "".join(tokens[-30:])
             earlier = "".join(tokens[-60:-30])
             if recent == earlier and len(recent) > 10:
-                logger.warning(f"[loop_detect] Strategy 2 (Window Match): 30-token window repeated exactly. Match: '{recent[:30]}...'")
+                logger.warning(
+                    f"[loop_detect] Strategy 2 (Window Match): 30-token window repeated exactly. Match: '{recent[:30]}...'"
+                )
                 return True
 
         # Strategy 3: Character uniqueness and Exact Substring Repeat
         recent_text = "".join(tokens[-150:]) if len(tokens) >= 150 else "".join(tokens)
-        
+
         # 3a. Character uniqueness
         if len(recent_text) >= 50:
             unique_chars = len(set(recent_text))
             if unique_chars < 15:
-                logger.warning(f"[loop_detect] Strategy 3a (Char Uniqueness): {unique_chars} unique chars in {len(recent_text)} length text. Sample: '{recent_text[-30:]}'")
+                logger.warning(
+                    f"[loop_detect] Strategy 3a (Char Uniqueness): {unique_chars} unique chars in {len(recent_text)} length text. Sample: '{recent_text[-30:]}'"
+                )
                 return True
-                
+
         # 3b. Long Substring Repetition (e.g. "如果某市的市名是“市” | " repeating)
         # If a sequence of >10 chars repeats 3+ times in the recent text, it's a loop.
         if len(recent_text) >= 60:
@@ -92,13 +99,17 @@ class DeepSeekOCRService:
                 pattern = recent_text[-p_len:]
                 # If the exact pattern appears 3 consecutive times at the end
                 if recent_text.endswith(pattern * 3):
-                    logger.warning(f"[loop_detect] Strategy 3b (Substring Repeat): Pattern '{pattern}' (len {p_len}) repeated 3+ times at end.")
+                    logger.warning(
+                        f"[loop_detect] Strategy 3b (Substring Repeat): Pattern '{pattern}' (len {p_len}) repeated 3+ times at end."
+                    )
                     return True
 
         # Strategy 4: Known HTML/Markdown patterns
         for pattern in self.LOOP_PATTERNS:
             if pattern.search(recent_text):
-                logger.warning(f"[loop_detect] Strategy 4 (Regex Pattern): Matched pattern {pattern.pattern} on text: '{recent_text[-40:]}'")
+                logger.warning(
+                    f"[loop_detect] Strategy 4 (Regex Pattern): Matched pattern {pattern.pattern} on text: '{recent_text[-40:]}'"
+                )
                 return True
 
         return False
@@ -234,9 +245,7 @@ class DeepSeekOCRService:
         response_tokens = result["eval_count"]
         total_tokens = prompt_tokens + response_tokens
         total_time = round(time.time() - start_time, 3)
-        token_speed = (
-            round(response_tokens / ollama_time, 1) if ollama_time > 0 else 0
-        )
+        token_speed = round(response_tokens / ollama_time, 1) if ollama_time > 0 else 0
 
         logger.info(
             f"[process] OCR done | Total: {total_time}s | Ollama: {ollama_time}s | "
@@ -273,9 +282,13 @@ class DeepSeekOCRService:
 
         try:
             # --- Image preprocessing ---
-            # Pipeline: Open → RGB → Resize → Enhance → Smart Crop → Save
+            # Pipeline: Open → EXIF Transpose → RGB → Resize → Enhance → Smart Crop → Save
             preprocess_start = time.time()
+            from PIL import ImageOps
             with Image.open(BytesIO(file_content)) as img:
+                # Apply EXIF rotation automatically (crucial for smartphone photos)
+                img = ImageOps.exif_transpose(img)
+                
                 original_size = img.size
                 logger.info(
                     f"[process] Image: {original_size[0]}x{original_size[1]} | "
@@ -313,13 +326,9 @@ class DeepSeekOCRService:
                         )
 
                 processed_size = img.size
-                save_quality = calculate_save_quality(
-                    len(file_content), processed_size
-                )
+                save_quality = calculate_save_quality(len(file_content), processed_size)
 
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".jpg"
-                ) as tmp:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                     tmp_path = tmp.name
                     img.save(tmp_path, format="JPEG", quality=save_quality)
 
@@ -334,8 +343,12 @@ class DeepSeekOCRService:
             # --- Attempt 1: Original prompt ---
             try:
                 return await self._process_single(
-                    tmp_path, original_size, processed_size,
-                    filename, prompt, start_time,
+                    tmp_path,
+                    original_size,
+                    processed_size,
+                    filename,
+                    prompt,
+                    start_time,
                 )
             except (TokenLoopError, asyncio.TimeoutError, Exception) as first_error:
                 # --- Attempt 2: Auto-retry with Free OCR if grounding failed ---
@@ -352,8 +365,12 @@ class DeepSeekOCRService:
                     )
                     try:
                         result = await self._process_single(
-                            tmp_path, original_size, processed_size,
-                            filename, "Free OCR.", start_time,
+                            tmp_path,
+                            original_size,
+                            processed_size,
+                            filename,
+                            "Free OCR.",
+                            start_time,
                         )
                         result["retried"] = True
                         result["original_prompt_error"] = (

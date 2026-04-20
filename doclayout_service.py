@@ -20,9 +20,22 @@ class DocLayoutService:
 
         try:
             suffix = Path(filename).suffix.lower()
+            if suffix not in [".jpg", ".jpeg", ".png", ".webp"]:
+                suffix = ".jpg"
+
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
             tmp_path = tmp.name
-            tmp.write(file_content)
+
+            # Load with PIL to fix EXIF rotation
+            from PIL import Image, ImageOps
+            from io import BytesIO
+
+            with Image.open(BytesIO(file_content)) as img:
+                img = ImageOps.exif_transpose(img)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                img.save(tmp_path, format="JPEG", quality=95)
+
             tmp.close()
 
             logger.info(f"DocLayout-YOLO figure detection started - File: {filename}")
