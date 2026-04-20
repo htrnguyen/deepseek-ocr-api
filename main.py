@@ -48,16 +48,24 @@ async def lifespan(app: FastAPI):
     """Startup: warmup model + start keepalive. Shutdown: cancel keepalive."""
     import ollama as ollama_client
 
-    # Warmup — pre-load model into memory
+    # Warmup — pre-load model into memory (with timeout)
     logger.info("[lifespan] Warming up Ollama model...")
     try:
-        await asyncio.to_thread(
-            ollama_client.chat,
-            model=settings.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": "ping"}],
-            keep_alive=-1,
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                ollama_client.chat,
+                model=settings.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": "ping"}],
+                keep_alive=-1,
+            ),
+            timeout=120,  # Max 2 phút cho warmup, nếu lâu hơn = skip
         )
         logger.info("[lifespan] Ollama model loaded and ready")
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[lifespan] Warmup timed out after 120s — model may still be loading. "
+            "App will start, keepalive task will retry."
+        )
     except Exception as e:
         logger.warning(
             f"[lifespan] Warmup failed (non-fatal): {type(e).__name__}: {e}"
