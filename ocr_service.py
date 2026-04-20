@@ -122,19 +122,28 @@ class DeepSeekOCRService:
 
     @staticmethod
     def _clean_output(text: str) -> str:
-        """Post-process OCR output to remove grounding artifacts.
+        """Post-process OCR output to remove grounding artifacts based on official DeepSeek-OCR v2 logic.
 
         Grounding mode outputs: <|ref|>word<|/ref|><|det|>[[x,y,x,y]]<|/det|>
-        We need to add spaces when stripping det blocks to prevent word concatenation.
         """
-        # Step 1: Replace <|det|>[[...]]<|/det|> with a space (prevents word sticking)
-        text = re.sub(r"<\|det\|>\[\[.*?\]\]<\|/det\|>", " ", text)
-        # Step 2: Remove <|ref|>text<|/ref|> → keep text
-        text = re.sub(r"<\|ref\|>(.*?)<\|/ref\|>", r"\1", text)
-        # Step 3: Clean up multiple spaces into one
-        text = re.sub(r" {2,}", " ", text)
-        # Step 4: Clean excessive newlines
-        text = re.sub(r"\n{3,}", "\n\n", text)
+        if not text:
+            return ""
+
+        # Remove <|ref|>...<|/ref|><|det|>...<|/det|> entirely if it references an 'image'
+        # Otherwise, remove the grounding line
+        pattern = r'(<\|ref\|>(.*?)<\|/ref\|><\|det\|>(.*?)<\|/det\|>)'
+        matches = re.findall(pattern, text, re.DOTALL)
+        
+        for match in matches:
+            if '<|ref|>image<|/ref|>' in match[0]:
+                text = text.replace(match[0], '', 1)
+            else:
+                # Remove the exact matched line
+                text = re.sub(rf'(?m)^[^\n]*{re.escape(match[0])}[^\n]*\n?', '', text)
+        
+        # Replace mathematical symbols
+        text = text.replace('\\coloneqq', ':=').replace('\\eqqcolon', '=:')
+        
         return text.strip()
 
     def _call_ollama_streaming(

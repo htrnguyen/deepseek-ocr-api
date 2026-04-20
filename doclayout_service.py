@@ -1,20 +1,33 @@
 import time
 import os
 import tempfile
+import asyncio
+from io import BytesIO
 from pathlib import Path
+
 from fastapi import HTTPException
+from PIL import Image, ImageOps
 from doclayout_yolo import YOLOv10
+
 from config import settings
 from logger import logger
 
 
 class DocLayoutService:
     def __init__(self):
-        logger.info("Loading DocLayout-YOLO model...")
-        self.model = YOLOv10(settings.DOC_LAYOUT_MODEL_PATH)
-        logger.info("DocLayout-YOLO model loaded successfully")
+        self.model = None
+
+    def _load_model(self):
+        if self.model is None:
+            logger.info("[detect_figures] Lazy-loading DocLayout-YOLO model...")
+            self.model = YOLOv10(settings.DOC_LAYOUT_MODEL_PATH)
+            logger.info("[detect_figures] DocLayout-YOLO model loaded successfully")
 
     async def detect_figures(self, file_content: bytes, filename: str):
+        # Lazy load model in background thread to avoid blocking event loop
+        if self.model is None:
+            await asyncio.to_thread(self._load_model)
+
         start_time = time.time()
         tmp_path = None
 
@@ -27,9 +40,6 @@ class DocLayoutService:
             tmp_path = tmp.name
 
             # Load with PIL to fix EXIF rotation
-            from PIL import Image, ImageOps
-            from io import BytesIO
-
             with Image.open(BytesIO(file_content)) as img:
                 img = ImageOps.exif_transpose(img)
                 if img.mode != "RGB":
@@ -38,9 +48,11 @@ class DocLayoutService:
 
             tmp.close()
 
-            logger.info(f"DocLayout-YOLO figure detection started - File: {filename}")
+            logger.info(f"[detect_figures] DocLayout-YOLO figure detection started - File: {filename}")
 
-            results = self.model.predict(tmp_path, imgsz=1024, conf=0.25, verbose=False)
+            results = await asyncio.to_thread(
+                self.model.predict, tmp_path, imgsz=1024, conf=0.25, verbose=False
+            )
             image_regions = []
 
             if len(results) > 0:
@@ -64,7 +76,7 @@ class DocLayoutService:
 
             process_time = round(time.time() - start_time, 3)
             logger.info(
-                f"DocLayout-YOLO completed in {process_time}s - Found {len(image_regions)} figure(s)"
+                f"[detect_figures] DocLayout-YOLO completed in {process_time}s - Found {len(image_regions)} figure(s)"
             )
 
             return {
