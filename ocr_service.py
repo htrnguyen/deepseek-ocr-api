@@ -22,41 +22,41 @@ class DeepSeekOCRService:
     """OCR service using DeepSeek model via Ollama with streaming monitoring.
 
     Key features:
-    - Streaming inference with real-time token loop detection
-    - Adaptive image preprocessing (resize-first, skip sharpening on hi-res)
+    - Streaming inference with aggressive token loop detection (every 10 tokens)
+    - Auto-retry: grounding mode fails → fallback to "Free OCR."
+    - Post-processing: clean grounding tags from output
     - keep_alive=-1: model stays loaded permanently
-    - Post-processing: clean grounding tags and malformed output
     """
 
-    # Patterns that indicate a token loop (repetitive structural tags)
+    # Patterns that indicate a token loop
     LOOP_PATTERNS = [
-        re.compile(r"(<td>\s*</td>){10,}"),           # Empty table cells
-        re.compile(r"(<tr>\s*</tr>){5,}"),             # Empty table rows
-        re.compile(r"(\|\s*){20,}"),                   # Markdown table pipes
-        re.compile(r"(</td><td>){10,}"),               # Alternating td tags
-        re.compile(r"(.{3,}?)\1{5,}"),                 # Any 3+ char pattern repeated 5+ times
+        re.compile(r"(<td>\s*</td>){8,}"),             # Empty table cells
+        re.compile(r"(<tr>\s*</tr>){5,}"),              # Empty table rows
+        re.compile(r"(\|\s*){15,}"),                    # Markdown table pipes
+        re.compile(r"(</td><td>){8,}"),                 # Alternating td tags
+        re.compile(r"(.{3,}?)\1{4,}"),                  # Any 3+ char pattern repeated 4+ times
+        re.compile(r"(<td></td>){6,}"),                 # Compact empty cells
     ]
 
     def __init__(self):
         self.model = settings.OLLAMA_MODEL
 
     def _detect_token_loop(self, tokens: list[str]) -> bool:
-        """Detect repetitive output using multiple strategies.
+        """Detect repetitive output using window comparison + pattern matching.
 
-        Strategy 1: Window comparison — last 20 tokens vs previous 20
-        Strategy 2: Pattern matching — known loop patterns (td, tr, pipes)
+        Runs every 10 tokens for aggressive early detection.
         """
-        if len(tokens) < 30:
+        if len(tokens) < 20:
             return False
 
-        # Strategy 1: Exact window match
-        recent = "".join(tokens[-15:])
-        earlier = "".join(tokens[-30:-15])
-        if recent == earlier and len(recent) > 10:
+        # Strategy 1: Exact window match (last 10 vs previous 10)
+        recent = "".join(tokens[-10:])
+        earlier = "".join(tokens[-20:-10])
+        if recent == earlier and len(recent) > 8:
             return True
 
-        # Strategy 2: Check known loop patterns in recent output
-        recent_text = "".join(tokens[-40:]) if len(tokens) >= 40 else "".join(tokens)
+        # Strategy 2: Known loop patterns in recent output
+        recent_text = "".join(tokens[-30:]) if len(tokens) >= 30 else "".join(tokens)
         for pattern in self.LOOP_PATTERNS:
             if pattern.search(recent_text):
                 return True
@@ -65,17 +65,12 @@ class DeepSeekOCRService:
 
     @staticmethod
     def _clean_output(text: str) -> str:
-        """Post-process OCR output to remove grounding artifacts.
-
-        DeepSeek OCR in grounding mode outputs bounding box tags like:
-        <|ref|>text<|/ref|><|det|>[[x1,y1,x2,y2]]<|/det|>
-        These are useful for localization but not for text extraction.
-        """
-        # Remove grounding reference tags: <|ref|>...<|/ref|>
+        """Post-process OCR output to remove grounding artifacts."""
+        # Remove <|ref|>text<|/ref|> → keep text
         text = re.sub(r"<\|ref\|>(.*?)<\|/ref\|>", r"\1", text)
-        # Remove detection bounding boxes: <|det|>[[...]]<|/det|>
+        # Remove <|det|>[[...]]<|/det|> → remove entirely
         text = re.sub(r"<\|det\|>\[\[.*?\]\]<\|/det\|>", "", text)
-        # Clean up excessive whitespace
+        # Clean excessive whitespace
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
@@ -85,16 +80,13 @@ class DeepSeekOCRService:
         prompt: str,
         ollama_options: dict,
     ) -> dict:
-        """Blocking call to Ollama with streaming and token loop monitoring.
+        """Blocking call to Ollama with streaming and aggressive loop monitoring.
 
-        Monitors every 20 tokens for:
-        - Token loop (window comparison + pattern matching)
-        - num_predict cap (Ollama auto-stops)
-
-        Returns dict with text, prompt_eval_count, eval_count.
+        Checks every 10 tokens. Raises TokenLoopError on detection.
         """
         tokens: list[str] = []
         stream_start = time.time()
+        first_token_time = None
 
         stream = ollama.chat(
             model=self.model,
@@ -116,23 +108,113 @@ class DeepSeekOCRService:
             if token:
                 tokens.append(token)
 
-            # Check for token loop every 20 tokens (aggressive detection)
-            if len(tokens) % 20 == 0 and self._detect_token_loop(tokens):
-                elapsed = round(time.time() - stream_start, 1)
-                token_count = len(tokens)
-                sample = "".join(tokens[-10:])[:80]
-                raise TokenLoopError(
-                    f"Repetitive output after {token_count} tokens ({elapsed}s). "
-                    f"Sample: '{sample}...'"
-                )
+                # Log first token timing (prompt eval duration)
+                if first_token_time is None:
+                    first_token_time = time.time()
+                    eval_time = round(first_token_time - stream_start, 1)
+                    logger.info(
+                        f"[streaming] First token after {eval_time}s (prompt eval)"
+                    )
+
+            # Check for token loop every 10 tokens (aggressive)
+            if len(tokens) >= 20 and len(tokens) % 10 == 0:
+                if self._detect_token_loop(tokens):
+                    elapsed = round(time.time() - stream_start, 1)
+                    sample = "".join(tokens[-8:])[:60]
+                    raise TokenLoopError(
+                        f"Loop after {len(tokens)} tokens ({elapsed}s). "
+                        f"Last: '{sample}...'"
+                    )
 
             if chunk.get("done"):
                 response_meta = chunk
 
+        full_text = "".join(tokens)
+
+        # Post-generation loop check: if hit num_predict exactly, likely a loop
+        eval_count = response_meta.get("eval_count", 0) or 0
+        if eval_count >= settings.OLLAMA_NUM_PREDICT - 10:
+            # Check if output is mostly repetitive HTML/table tags
+            tag_ratio = len(re.findall(r"</?t[dhr]>", full_text)) / max(len(tokens), 1)
+            if tag_ratio > 0.5:
+                raise TokenLoopError(
+                    f"Hit token limit ({eval_count}) with {tag_ratio:.0%} HTML tags — likely loop"
+                )
+
         return {
-            "text": "".join(tokens),
+            "text": full_text,
             "prompt_eval_count": response_meta.get("prompt_eval_count", 0) or 0,
-            "eval_count": response_meta.get("eval_count", 0) or 0,
+            "eval_count": eval_count,
+        }
+
+    async def _process_single(
+        self,
+        tmp_path: str,
+        original_size: tuple[int, int],
+        processed_size: tuple[int, int],
+        filename: str,
+        prompt: str,
+        start_time: float,
+    ) -> dict:
+        """Single OCR attempt with given prompt."""
+        # Build Ollama options
+        ollama_options = {
+            "temperature": settings.OLLAMA_TEMPERATURE,
+            "num_ctx": settings.OLLAMA_NUM_CTX,
+            "num_predict": settings.OLLAMA_NUM_PREDICT,
+            "repeat_penalty": settings.OLLAMA_REPEAT_PENALTY,
+            "repeat_last_n": settings.OLLAMA_REPEAT_LAST_N,
+            "top_k": settings.OLLAMA_TOP_K,
+            "top_p": settings.OLLAMA_TOP_P,
+        }
+
+        logger.info(
+            f"[process] Ollama: model={self.model} | prompt='{prompt}' | "
+            f"timeout={settings.OLLAMA_TIMEOUT}s | "
+            f"repeat_penalty={ollama_options['repeat_penalty']}"
+        )
+
+        # Call Ollama with streaming
+        ollama_start = time.time()
+        logger.info("[process] Sending streaming request to Ollama...")
+
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                self._call_ollama_streaming,
+                tmp_path,
+                prompt,
+                ollama_options,
+            ),
+            timeout=settings.OLLAMA_TIMEOUT,
+        )
+
+        ollama_time = round(time.time() - ollama_start, 3)
+
+        # Post-process
+        result_text = self._clean_output(result["text"]).strip()
+        prompt_tokens = result["prompt_eval_count"]
+        response_tokens = result["eval_count"]
+        total_tokens = prompt_tokens + response_tokens
+        total_time = round(time.time() - start_time, 3)
+        token_speed = (
+            round(response_tokens / ollama_time, 1) if ollama_time > 0 else 0
+        )
+
+        logger.info(
+            f"[process] OCR done | Total: {total_time}s | Ollama: {ollama_time}s | "
+            f"Tokens: {prompt_tokens}p + {response_tokens}r = {total_tokens} | "
+            f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars"
+        )
+
+        return {
+            "text": result_text,
+            "original_size": f"{original_size[0]}x{original_size[1]}",
+            "processed_size": f"{processed_size[0]}x{processed_size[1]}",
+            "processing_time": f"{total_time}s",
+            "ollama_time": f"{ollama_time}s",
+            "prompt_tokens": prompt_tokens,
+            "response_tokens": response_tokens,
+            "total_tokens": total_tokens,
         }
 
     async def process(
@@ -141,16 +223,18 @@ class DeepSeekOCRService:
         filename: str,
         prompt: str,
     ) -> dict:
-        """Process an image through DeepSeek OCR with streaming and monitoring."""
+        """Process an image through DeepSeek OCR.
+
+        Auto-retry: if grounding mode fails (loop/timeout/error),
+        automatically retries with "Free OCR." prompt.
+        """
         start_time = time.time()
         tmp_path = None
 
-        logger.info(f"[process] OCR start | File: {filename} | Prompt: '{prompt}'")
+        logger.info(f"[process] OCR start | File: {filename}")
 
         try:
             # --- Image preprocessing ---
-            # Pipeline: Open → RGB → Resize → Enhance → Save
-            # IMPORTANT: Resize BEFORE enhance to avoid processing 4K pixels
             preprocess_start = time.time()
             with Image.open(BytesIO(file_content)) as img:
                 original_size = img.size
@@ -162,10 +246,7 @@ class DeepSeekOCRService:
                 if img.mode != "RGB":
                     img = img.convert("RGB")
 
-                # Step 1: Resize first (critical for 4K+ images)
                 img = auto_resize_image(img, settings.MAX_LONG_SIDE)
-
-                # Step 2: Enhance on resized image (fast + adaptive)
                 img = enhance_for_ocr(img, original_resolution=original_size)
 
                 processed_size = img.size
@@ -173,7 +254,6 @@ class DeepSeekOCRService:
                     len(file_content), processed_size
                 )
 
-                # Always save as JPEG for consistent, compact temp files
                 with tempfile.NamedTemporaryFile(
                     delete=False, suffix=".jpg"
                 ) as tmp:
@@ -188,70 +268,55 @@ class DeepSeekOCRService:
                 f"Time: {preprocess_time}s"
             )
 
-            # --- Build Ollama options ---
-            ollama_options = {
-                "temperature": settings.OLLAMA_TEMPERATURE,
-                "num_ctx": settings.OLLAMA_NUM_CTX,
-                "num_predict": settings.OLLAMA_NUM_PREDICT,
-                "repeat_penalty": settings.OLLAMA_REPEAT_PENALTY,
-                "repeat_last_n": settings.OLLAMA_REPEAT_LAST_N,
-                "top_k": settings.OLLAMA_TOP_K,
-                "top_p": settings.OLLAMA_TOP_P,
-            }
+            # --- Attempt 1: Original prompt ---
+            try:
+                return await self._process_single(
+                    tmp_path, original_size, processed_size,
+                    filename, prompt, start_time,
+                )
+            except (TokenLoopError, asyncio.TimeoutError, Exception) as first_error:
+                # --- Attempt 2: Auto-retry with Free OCR if grounding failed ---
+                is_grounding = "<|grounding|>" in prompt
+                is_retryable = isinstance(
+                    first_error, (TokenLoopError, asyncio.TimeoutError)
+                ) or "RemoteProtocolError" in str(type(first_error).__name__)
 
-            logger.info(
-                f"[process] Ollama: model={self.model} | "
-                f"timeout={settings.OLLAMA_TIMEOUT}s | "
-                f"repeat_penalty={ollama_options['repeat_penalty']} | "
-                f"repeat_last_n={ollama_options['repeat_last_n']}"
-            )
+                if is_grounding and is_retryable:
+                    logger.warning(
+                        f"[process] RETRY | '{prompt}' failed "
+                        f"({type(first_error).__name__}). "
+                        f"Retrying with 'Free OCR.'..."
+                    )
+                    try:
+                        result = await self._process_single(
+                            tmp_path, original_size, processed_size,
+                            filename, "Free OCR.", start_time,
+                        )
+                        result["retried"] = True
+                        result["original_prompt_error"] = (
+                            f"{type(first_error).__name__}"
+                        )
+                        return result
+                    except Exception as retry_error:
+                        logger.error(
+                            f"[process] RETRY ALSO FAILED | "
+                            f"{type(retry_error).__name__}: {retry_error}"
+                        )
+                        # Fall through to raise original error
 
-            # --- Call Ollama with streaming ---
-            ollama_start = time.time()
-            logger.info("[process] Sending streaming request to Ollama...")
+                # Re-raise with proper HTTP status
+                self._raise_http_error(first_error, filename, start_time)
 
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self._call_ollama_streaming,
-                    tmp_path,
-                    prompt,
-                    ollama_options,
-                ),
-                timeout=settings.OLLAMA_TIMEOUT,
-            )
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
-            ollama_time = round(time.time() - ollama_start, 3)
+    @staticmethod
+    def _raise_http_error(error: Exception, filename: str, start_time: float):
+        """Convert exception to appropriate HTTPException."""
+        elapsed = round(time.time() - start_time, 3)
 
-            # --- Post-process & extract response ---
-            raw_text = result["text"]
-            result_text = self._clean_output(raw_text).strip()
-            prompt_tokens = result["prompt_eval_count"]
-            response_tokens = result["eval_count"]
-            total_tokens = prompt_tokens + response_tokens
-            total_time = round(time.time() - start_time, 3)
-            token_speed = (
-                round(response_tokens / ollama_time, 1) if ollama_time > 0 else 0
-            )
-
-            logger.info(
-                f"[process] OCR done | Total: {total_time}s | Ollama: {ollama_time}s | "
-                f"Tokens: {prompt_tokens}p + {response_tokens}r = {total_tokens} | "
-                f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars"
-            )
-
-            return {
-                "text": result_text,
-                "original_size": f"{original_size[0]}x{original_size[1]}",
-                "processed_size": f"{processed_size[0]}x{processed_size[1]}",
-                "processing_time": f"{total_time}s",
-                "ollama_time": f"{ollama_time}s",
-                "prompt_tokens": prompt_tokens,
-                "response_tokens": response_tokens,
-                "total_tokens": total_tokens,
-            }
-
-        except asyncio.TimeoutError:
-            elapsed = round(time.time() - start_time, 3)
+        if isinstance(error, asyncio.TimeoutError):
             logger.error(
                 f"[process] TIMEOUT | File: {filename} | "
                 f"Elapsed: {elapsed}s | Limit: {settings.OLLAMA_TIMEOUT}s"
@@ -259,39 +324,32 @@ class DeepSeekOCRService:
             raise HTTPException(
                 status_code=504,
                 detail=(
-                    f"OCR timed out after {elapsed}s "
-                    f"(limit: {settings.OLLAMA_TIMEOUT}s). Please retry."
+                    f"OCR timed out after {elapsed}s. "
+                    f"Try a smaller image or 'Free OCR.' prompt."
                 ),
             )
 
-        except TokenLoopError as e:
-            elapsed = round(time.time() - start_time, 3)
+        if isinstance(error, TokenLoopError):
             logger.warning(
                 f"[process] TOKEN LOOP | File: {filename} | "
-                f"Elapsed: {elapsed}s | {e}"
+                f"Elapsed: {elapsed}s | {error}"
             )
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"OCR detected repetitive output (token loop) after {elapsed}s. "
-                    f"Try using 'Free OCR.' prompt instead of grounding mode."
+                    f"OCR detected repetitive output after {elapsed}s. "
+                    f"Try 'Free OCR.' prompt for this image."
                 ),
             )
 
-        except HTTPException:
-            raise
+        if isinstance(error, HTTPException):
+            raise error
 
-        except Exception as e:
-            elapsed = round(time.time() - start_time, 3)
-            logger.error(
-                f"[process] ERROR | File: {filename} | "
-                f"Elapsed: {elapsed}s | {type(e).__name__}: {e}"
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"OCR failed: {type(e).__name__}: {e}",
-            )
-
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        logger.error(
+            f"[process] ERROR | File: {filename} | "
+            f"Elapsed: {elapsed}s | {type(error).__name__}: {error}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"OCR failed: {type(error).__name__}: {error}",
+        )

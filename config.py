@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "deepseek-ocr"
     OLLAMA_TIMEOUT: int = 120
     OLLAMA_NUM_CTX: int = 8192
-    OLLAMA_NUM_PREDICT: int = 4096
+    OLLAMA_NUM_PREDICT: int = 2048
     OLLAMA_TEMPERATURE: float = 0.0
     OLLAMA_REPEAT_PENALTY: float = 1.15
     OLLAMA_REPEAT_LAST_N: int = -1  # Scan toàn bộ context để chống loop
