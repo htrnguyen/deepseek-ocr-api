@@ -11,7 +11,9 @@ class Settings(BaseSettings):
     - Resolution modes: Tiny(512), Small(640), Base(1024), Large(1280)
     """
 
-    MAX_LONG_SIDE: int = 1024
+    # Allow larger image sizes to utilize DeepSeek-OCR's dynamic resolution 
+    # (SAM local patches 768x768). Previously 1024 forced it to Global View only!
+    MAX_LONG_SIDE: int = 2048
     MAX_FILE_SIZE: int = 10 * 1024 * 1024
     RATE_LIMIT: str = "60/minute"
 
@@ -34,7 +36,8 @@ class Settings(BaseSettings):
     # "<|grounding|>Convert the document to markdown." — structured layout, tables
     PROMPT_FREE_OCR: str = "Free OCR."
     PROMPT_MARKDOWN: str = "<|grounding|>Convert the document to markdown."
-    DEFAULT_PROMPT: str = "<|grounding|>Convert the document to markdown."
+    PROMPT_GENERAL_OCR: str = "<|grounding|>OCR this image."
+    DEFAULT_PROMPT: str = PROMPT_GENERAL_OCR
 
     # --- DocLayout ---
     DOC_LAYOUT_MODEL_PATH: str = (

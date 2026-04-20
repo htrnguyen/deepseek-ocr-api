@@ -253,6 +253,9 @@ class DeepSeekOCRService:
             f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars"
         )
 
+        if len(result_text) < 20 and response_tokens < 50:
+            raise Exception("EmptyOutputError")
+
         return {
             "text": result_text,
             "original_size": f"{original_size[0]}x{original_size[1]}",
@@ -335,9 +338,11 @@ class DeepSeekOCRService:
             except (TokenLoopError, asyncio.TimeoutError, Exception) as first_error:
                 # --- Attempt 2: Auto-retry with Free OCR if grounding failed ---
                 is_grounding = "<|grounding|>" in prompt
-                is_retryable = isinstance(
-                    first_error, (TokenLoopError, asyncio.TimeoutError)
-                ) or "RemoteProtocolError" in str(type(first_error).__name__)
+                is_retryable = (
+                    isinstance(first_error, (TokenLoopError, asyncio.TimeoutError))
+                    or "RemoteProtocolError" in str(type(first_error).__name__)
+                    or "EmptyOutputError" in str(first_error)
+                )
 
                 if is_grounding and is_retryable:
                     logger.warning(
