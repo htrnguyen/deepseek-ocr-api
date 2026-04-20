@@ -146,6 +146,19 @@ def smart_crop_content_region(
         x1, y1, x2, y2 = map(int, box)
         label = CLASS_NAMES.get(cls_id, f"class_{cls_id}")
         is_content = cls_id in CONTENT_CLASSES
+        
+        box_area = (x2 - x1) * (y2 - y1)
+        area_ratio = box_area / (img_w * img_h)
+
+        # Ignore massive figures/tables (often false positives on background grid paper)
+        if is_content and cls_id in {3, 5} and area_ratio >= 0.45:
+            logger.info(
+                f"[smart_crop]   ✗ (ignore) [{label}] conf={conf:.2f} "
+                f"bbox=[{x1},{y1},{x2},{y2}] size={x2-x1}x{y2-y1} "
+                f"(covers {area_ratio:.0%} of image, likely background grid!)"
+            )
+            continue
+
         status = "✓" if is_content else "✗ (abandon)"
 
         logger.info(

@@ -58,32 +58,47 @@ class DeepSeekOCRService:
             return False
 
         # Strategy 1: Unique token ratio (MOST IMPORTANT)
-        # In healthy generation, ~60-90% of tokens are unique
-        # In a loop, same tokens repeat → <20% unique
-        window = tokens[-50:] if len(tokens) >= 50 else tokens
-        if len(window) >= 30:
+        # Increase window to 100 to handle multi-token characters (like Chinese)
+        window = tokens[-100:] if len(tokens) >= 100 else tokens
+        if len(window) >= 40:
             unique_ratio = len(set(window)) / len(window)
-            if unique_ratio < 0.2:
+            if unique_ratio < 0.25: # Relaxed from 0.2
+                logger.warning(f"[loop_detect] Strategy 1 (Unique Ratio): {unique_ratio:.2%} < 25%. Tokens: {len(set(window))} unique / {len(window)} total. Sample: {''.join(window[-10:])}")
                 return True
 
-        # Strategy 2: Window comparison (last 20 vs previous 20)
-        if len(tokens) >= 40:
-            recent = "".join(tokens[-20:])
-            earlier = "".join(tokens[-40:-20])
+        # Strategy 2: Window comparison
+        if len(tokens) >= 60:
+            recent = "".join(tokens[-30:])
+            earlier = "".join(tokens[-60:-30])
             if recent == earlier and len(recent) > 10:
+                logger.warning(f"[loop_detect] Strategy 2 (Window Match): 30-token window repeated exactly. Match: '{recent[:30]}...'")
                 return True
 
-        # Strategy 3: Character uniqueness on recent text
-        # Loop output has very few unique characters relative to length
-        recent_text = "".join(tokens[-60:]) if len(tokens) >= 60 else "".join(tokens)
-        if len(recent_text) > 100:
+        # Strategy 3: Character uniqueness and Exact Substring Repeat
+        recent_text = "".join(tokens[-150:]) if len(tokens) >= 150 else "".join(tokens)
+        
+        # 3a. Character uniqueness
+        if len(recent_text) >= 50:
             unique_chars = len(set(recent_text))
-            if unique_chars < 20:
+            if unique_chars < 15:
+                logger.warning(f"[loop_detect] Strategy 3a (Char Uniqueness): {unique_chars} unique chars in {len(recent_text)} length text. Sample: '{recent_text[-30:]}'")
                 return True
+                
+        # 3b. Long Substring Repetition (e.g. "如果某市的市名是“市” | " repeating)
+        # If a sequence of >10 chars repeats 3+ times in the recent text, it's a loop.
+        if len(recent_text) >= 60:
+            # Check for patterns of length 15 to 40 characters
+            for p_len in range(15, 40):
+                pattern = recent_text[-p_len:]
+                # If the exact pattern appears 3 consecutive times at the end
+                if recent_text.endswith(pattern * 3):
+                    logger.warning(f"[loop_detect] Strategy 3b (Substring Repeat): Pattern '{pattern}' (len {p_len}) repeated 3+ times at end.")
+                    return True
 
         # Strategy 4: Known HTML/Markdown patterns
         for pattern in self.LOOP_PATTERNS:
             if pattern.search(recent_text):
+                logger.warning(f"[loop_detect] Strategy 4 (Regex Pattern): Matched pattern {pattern.pattern} on text: '{recent_text[-40:]}'")
                 return True
 
         return False
@@ -159,12 +174,10 @@ class DeepSeekOCRService:
         # Post-generation loop check: if hit num_predict exactly, likely a loop
         eval_count = response_meta.get("eval_count", 0) or 0
         if eval_count >= settings.OLLAMA_NUM_PREDICT - 10:
-            # Check if output is mostly repetitive HTML/table tags
-            tag_ratio = len(re.findall(r"</?t[dhr]>", full_text)) / max(len(tokens), 1)
-            if tag_ratio > 0.5:
-                raise TokenLoopError(
-                    f"Hit token limit ({eval_count}) with {tag_ratio:.0%} HTML tags — likely loop"
-                )
+            raise TokenLoopError(
+                f"Hit token limit ({eval_count} >= {settings.OLLAMA_NUM_PREDICT}) "
+                f"— model is stuck in an infinite loop."
+            )
 
         return {
             "text": full_text,
@@ -260,7 +273,7 @@ class DeepSeekOCRService:
 
         try:
             # --- Image preprocessing ---
-            # Pipeline: Open → RGB → Smart Crop → Resize → Enhance → Save
+            # Pipeline: Open → RGB → Resize → Enhance → Smart Crop → Save
             preprocess_start = time.time()
             with Image.open(BytesIO(file_content)) as img:
                 original_size = img.size
@@ -272,7 +285,14 @@ class DeepSeekOCRService:
                 if img.mode != "RGB":
                     img = img.convert("RGB")
 
-                # Step 1: Smart Crop — remove empty regions (grid paper, margins)
+                # Step 1: Resize (critical for 4K+ images, preserves quality via LANCZOS)
+                img = auto_resize_image(img, settings.MAX_LONG_SIDE)
+
+                # Step 2: Enhance (Contrast + Sharpness)
+                img = enhance_for_ocr(img, original_resolution=original_size)
+
+                # Step 3: Smart Crop on enhanced image
+                # Much higher chance for YOLO to detect text on sharp, resized image
                 crop_info = {"cropped": False}
                 if self.doclayout_model is not None:
                     img, crop_info = smart_crop_content_region(
@@ -291,12 +311,6 @@ class DeepSeekOCRService:
                             f"({crop_info.get('skip_reason', 'no regions')} | "
                             f"Regions: {crop_info.get('detected_regions', 0)})"
                         )
-
-                # Step 2: Resize (critical for 4K+ images)
-                img = auto_resize_image(img, settings.MAX_LONG_SIDE)
-
-                # Step 3: Enhance on resized image
-                img = enhance_for_ocr(img, original_resolution=original_size)
 
                 processed_size = img.size
                 save_quality = calculate_save_quality(
