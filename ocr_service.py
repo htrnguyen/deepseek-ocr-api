@@ -9,7 +9,12 @@ from io import BytesIO
 import ollama
 from fastapi import HTTPException
 from config import settings
-from image_utils import enhance_for_ocr, auto_resize_image, calculate_save_quality
+from image_utils import (
+    enhance_for_ocr,
+    auto_resize_image,
+    calculate_save_quality,
+    smart_crop_content_region,
+)
 from logger import logger
 
 
@@ -37,8 +42,9 @@ class DeepSeekOCRService:
         re.compile(r"(<td></td>){5,}"),                  # Compact empty cells
     ]
 
-    def __init__(self):
+    def __init__(self, doclayout_model=None):
         self.model = settings.OLLAMA_MODEL
+        self.doclayout_model = doclayout_model
 
     def _detect_token_loop(self, tokens: list[str]) -> bool:
         """Detect repetitive output using 4 strategies.
@@ -254,6 +260,7 @@ class DeepSeekOCRService:
 
         try:
             # --- Image preprocessing ---
+            # Pipeline: Open → RGB → Smart Crop → Resize → Enhance → Save
             preprocess_start = time.time()
             with Image.open(BytesIO(file_content)) as img:
                 original_size = img.size
@@ -265,7 +272,30 @@ class DeepSeekOCRService:
                 if img.mode != "RGB":
                     img = img.convert("RGB")
 
+                # Step 1: Smart Crop — remove empty regions (grid paper, margins)
+                crop_info = {"cropped": False}
+                if self.doclayout_model is not None:
+                    img, crop_info = smart_crop_content_region(
+                        img, self.doclayout_model
+                    )
+                    if crop_info["cropped"]:
+                        logger.info(
+                            f"[process] Smart crop: {crop_info['original_size']} → "
+                            f"{crop_info['cropped_size']} | "
+                            f"Regions: {crop_info['detected_regions']} "
+                            f"({', '.join(crop_info['region_labels'])})"
+                        )
+                    else:
+                        logger.info(
+                            f"[process] Smart crop: skipped "
+                            f"({crop_info.get('skip_reason', 'no regions')} | "
+                            f"Regions: {crop_info.get('detected_regions', 0)})"
+                        )
+
+                # Step 2: Resize (critical for 4K+ images)
                 img = auto_resize_image(img, settings.MAX_LONG_SIDE)
+
+                # Step 3: Enhance on resized image
                 img = enhance_for_ocr(img, original_resolution=original_size)
 
                 processed_size = img.size
