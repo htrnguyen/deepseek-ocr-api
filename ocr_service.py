@@ -82,8 +82,9 @@ class DeepSeekOCRService:
                         if hasattr(stream, "close"):
                             stream.close()
 
-                        valid_tokens = tokens[:-100] if len(tokens) > 100 else []
-                        if len(valid_tokens) >= 50:
+                        # Cut the last 50 tokens (the detected loop)
+                        valid_tokens = tokens[:-50] if len(tokens) > 50 else []
+                        if len(valid_tokens) >= 20:
                             logger.info(
                                 f"[loop_detect] | Partial Success | Recovered {len(valid_tokens)} "
                                 f"valid tokens before the loop"
@@ -117,8 +118,8 @@ class DeepSeekOCRService:
                 if hasattr(stream, "close"):
                     stream.close()
 
-                valid_tokens = tokens[:-100] if len(tokens) > 100 else []
-                if len(valid_tokens) >= 50:
+                valid_tokens = tokens[:-50] if len(tokens) > 50 else []
+                if len(valid_tokens) >= 20:
                     logger.info(
                         f"[loop_detect] | Partial Success | Recovered {len(valid_tokens)} "
                         f"valid tokens before Ollama's built-in loop error"
