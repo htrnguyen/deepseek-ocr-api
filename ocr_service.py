@@ -122,12 +122,18 @@ class DeepSeekOCRService:
 
     @staticmethod
     def _clean_output(text: str) -> str:
-        """Post-process OCR output to remove grounding artifacts."""
-        # Remove <|ref|>text<|/ref|> → keep text
+        """Post-process OCR output to remove grounding artifacts.
+
+        Grounding mode outputs: <|ref|>word<|/ref|><|det|>[[x,y,x,y]]<|/det|>
+        We need to add spaces when stripping det blocks to prevent word concatenation.
+        """
+        # Step 1: Replace <|det|>[[...]]<|/det|> with a space (prevents word sticking)
+        text = re.sub(r"<\|det\|>\[\[.*?\]\]<\|/det\|>", " ", text)
+        # Step 2: Remove <|ref|>text<|/ref|> → keep text
         text = re.sub(r"<\|ref\|>(.*?)<\|/ref\|>", r"\1", text)
-        # Remove <|det|>[[...]]<|/det|> → remove entirely
-        text = re.sub(r"<\|det\|>\[\[.*?\]\]<\|/det\|>", "", text)
-        # Clean excessive whitespace
+        # Step 3: Clean up multiple spaces into one
+        text = re.sub(r" {2,}", " ", text)
+        # Step 4: Clean excessive newlines
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
@@ -160,31 +166,70 @@ class DeepSeekOCRService:
         )
 
         response_meta = {}
-        for chunk in stream:
-            token = chunk.get("message", {}).get("content", "")
-            if token:
-                tokens.append(token)
+        try:
+            for chunk in stream:
+                token = chunk.get("message", {}).get("content", "")
+                if token:
+                    tokens.append(token)
 
-                # Log first token timing (prompt eval duration)
-                if first_token_time is None:
-                    first_token_time = time.time()
-                    eval_time = round(first_token_time - stream_start, 1)
-                    logger.info(
-                        f"[streaming] First token after {eval_time}s (prompt eval)"
-                    )
+                    # Log first token timing (prompt eval duration)
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                        eval_time = round(first_token_time - stream_start, 1)
+                        logger.info(
+                            f"[streaming] First token after {eval_time}s (prompt eval)"
+                        )
 
-            # Check for token loop every 10 tokens (aggressive)
-            if len(tokens) >= 20 and len(tokens) % 10 == 0:
-                if self._detect_token_loop(tokens):
+                # Progress log every 50 tokens
+                if len(tokens) > 0 and len(tokens) % 50 == 0:
                     elapsed = round(time.time() - stream_start, 1)
-                    sample = "".join(tokens[-8:])[:60]
-                    raise TokenLoopError(
-                        f"Loop after {len(tokens)} tokens ({elapsed}s). "
-                        f"Last: '{sample}...'"
+                    preview = "".join(tokens[-20:])[:80]
+                    logger.info(
+                        f"[streaming] Progress: {len(tokens)} tokens | "
+                        f"{elapsed}s | Last: '{preview}'"
                     )
 
-            if chunk.get("done"):
-                response_meta = chunk
+                # Check for token loop every 10 tokens (aggressive)
+                if len(tokens) >= 20 and len(tokens) % 10 == 0:
+                    if self._detect_token_loop(tokens):
+                        elapsed = round(time.time() - stream_start, 1)
+                        full_output = "".join(tokens)
+                        logger.warning(
+                            f"[loop_detect] ═══ LOOP DETECTED ═══\n"
+                            f"  Prompt: '{prompt}'\n"
+                            f"  Tokens: {len(tokens)} | Elapsed: {elapsed}s\n"
+                            f"  Full output ({len(full_output)} chars):\n"
+                            f"  ──────────────────────────────────────\n"
+                            f"  {full_output[:500]}\n"
+                            f"  ──────────────────────────────────────"
+                        )
+                        raise TokenLoopError(
+                            f"Loop after {len(tokens)} tokens ({elapsed}s). "
+                            f"Last: '{''.join(tokens[-8:])[:60]}...'"
+                        )
+
+                if chunk.get("done"):
+                    response_meta = chunk
+
+        except ollama.ResponseError as e:
+            # Ollama's built-in loop detection throws this error
+            if "looping" in str(e).lower():
+                elapsed = round(time.time() - stream_start, 1)
+                full_output = "".join(tokens)
+                logger.warning(
+                    f"[loop_detect] ═══ OLLAMA LOOP DETECTED ═══\n"
+                    f"  Prompt: '{prompt}'\n"
+                    f"  Tokens: {len(tokens)} | Elapsed: {elapsed}s\n"
+                    f"  Ollama error: {e}\n"
+                    f"  Output so far ({len(full_output)} chars):\n"
+                    f"  ──────────────────────────────────────\n"
+                    f"  {full_output[:500]}\n"
+                    f"  ──────────────────────────────────────"
+                )
+                raise TokenLoopError(
+                    f"Ollama loop detection after {len(tokens)} tokens ({elapsed}s)"
+                )
+            raise  # Re-raise non-loop errors
 
         full_text = "".join(tokens)
 
@@ -251,9 +296,10 @@ class DeepSeekOCRService:
         token_speed = round(response_tokens / ollama_time, 1) if ollama_time > 0 else 0
 
         logger.info(
-            f"[process] OCR done | Total: {total_time}s | Ollama: {ollama_time}s | "
+            f"[process] ✅ OCR done | Total: {total_time}s | Ollama: {ollama_time}s | "
             f"Tokens: {prompt_tokens}p + {response_tokens}r = {total_tokens} | "
-            f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars"
+            f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars\n"
+            f"  Preview: '{result_text[:200]}'"
         )
 
         # Guard: if output is suspiciously short, it's likely hallucination
@@ -337,34 +383,46 @@ class DeepSeekOCRService:
                     start_time,
                 )
             except (TokenLoopError, asyncio.TimeoutError, EmptyOutputError) as first_error:
-                # --- Attempt 2: Auto-retry with Free OCR if grounding failed ---
-                is_grounding = "<|grounding|>" in prompt
-                if is_grounding:
-                    logger.warning(
-                        f"[process] RETRY | '{prompt}' failed "
-                        f"({type(first_error).__name__}). "
-                        f"Retrying with 'Free OCR.'..."
-                    )
+                logger.warning(
+                    f"[process] ⚠️ Attempt 1 FAILED | prompt='{prompt}' | "
+                    f"{type(first_error).__name__}"
+                )
+
+                # Build fallback prompt chain (skip current prompt)
+                fallback_prompts = []
+                if prompt != settings.PROMPT_GENERAL_OCR:
+                    fallback_prompts.append(settings.PROMPT_GENERAL_OCR)
+                if prompt != settings.PROMPT_FREE_OCR:
+                    fallback_prompts.append(settings.PROMPT_FREE_OCR)
+
+                # --- Attempt 2 & 3: Fallback prompts ---
+                for i, fallback_prompt in enumerate(fallback_prompts, start=2):
                     try:
+                        logger.warning(
+                            f"[process] RETRY #{i} | Trying '{fallback_prompt}'..."
+                        )
                         result = await self._process_single(
                             tmp_path,
                             original_size,
                             filename,
-                            "Free OCR.",
+                            fallback_prompt,
                             start_time,
                         )
                         result["retried"] = True
+                        result["retry_attempt"] = i
                         result["original_prompt_error"] = (
                             type(first_error).__name__
                         )
                         return result
-                    except Exception as retry_error:
+                    except (TokenLoopError, asyncio.TimeoutError, EmptyOutputError) as retry_error:
                         logger.error(
-                            f"[process] RETRY ALSO FAILED | "
+                            f"[process] ❌ Attempt {i} FAILED | "
+                            f"prompt='{fallback_prompt}' | "
                             f"{type(retry_error).__name__}: {retry_error}"
                         )
+                        continue  # Try next fallback
 
-                # Re-raise with proper HTTP status
+                # All attempts failed
                 self._raise_http_error(first_error, filename, start_time)
 
         finally:

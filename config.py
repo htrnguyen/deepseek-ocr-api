@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     PROMPT_FREE_OCR: str = "Free OCR."
     PROMPT_MARKDOWN: str = "<|grounding|>Convert the document to markdown."
     PROMPT_GENERAL_OCR: str = "<|grounding|>OCR this image."
-    DEFAULT_PROMPT: str = PROMPT_GENERAL_OCR
+    DEFAULT_PROMPT: str = PROMPT_MARKDOWN
 
     # --- DocLayout ---
     DOC_LAYOUT_MODEL_PATH: str = (
