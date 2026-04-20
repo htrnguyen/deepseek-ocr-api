@@ -6,9 +6,10 @@ class Settings(BaseSettings):
     """Application settings loaded from .env file.
 
     DeepSeek OCR Reference (Ollama):
-    - Model: deepseek-ocr:3b (6.7GB, 8K context)
-    - Prompts: "Free OCR." | "<|grounding|>Convert the document to markdown."
-    - Resolution modes: Tiny(512), Small(640), Base(1024), Large(1280)
+    - Model: deepseek-ocr (SAM + Qwen2 encoder, 8K context)
+    - Dynamic Resolution: Global(1024x1024) + Local patches(768x768, 1-6)
+    - Prompts: "Free OCR." | "<|grounding|>OCR this image."
+    - Pipeline: EXIF → Resize(2048) → Grid Removal → Enhance → OCR
     """
 
     # Allow larger image sizes to utilize DeepSeek-OCR's dynamic resolution 

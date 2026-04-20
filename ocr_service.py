@@ -3,8 +3,7 @@ import re
 import time
 import os
 import tempfile
-from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
 from io import BytesIO
 import ollama
 from fastapi import HTTPException
@@ -13,14 +12,18 @@ from image_utils import (
     enhance_for_ocr,
     auto_resize_image,
     calculate_save_quality,
-    smart_crop_content_region,
+    remove_grid_lines,
 )
 from logger import logger
 
 
 class TokenLoopError(Exception):
     """Raised when repetitive token output is detected during streaming."""
+    pass
 
+
+class EmptyOutputError(Exception):
+    """Raised when OCR output is suspiciously short (likely model hallucination)."""
     pass
 
 
@@ -30,6 +33,7 @@ class DeepSeekOCRService:
     Key features:
     - Streaming inference with aggressive token loop detection (every 10 tokens)
     - Auto-retry: grounding mode fails → fallback to "Free OCR."
+    - Grid paper detection + removal via OpenCV morphological operations
     - Post-processing: clean grounding tags from output
     - keep_alive=-1: model stays loaded permanently
     """
@@ -52,20 +56,21 @@ class DeepSeekOCRService:
 
         Strategy 1: Unique token ratio — catches ANY repetition pattern
         Strategy 2: Window comparison — exact match of consecutive windows
-        Strategy 3: Character uniqueness — very few unique chars = loop
+        Strategy 3: Character uniqueness + Substring repetition
         Strategy 4: Regex patterns — known HTML/Markdown loop patterns
         """
         if len(tokens) < 20:
             return False
 
         # Strategy 1: Unique token ratio (MOST IMPORTANT)
-        # Increase window to 100 to handle multi-token characters (like Chinese)
         window = tokens[-100:] if len(tokens) >= 100 else tokens
         if len(window) >= 40:
             unique_ratio = len(set(window)) / len(window)
-            if unique_ratio < 0.25:  # Relaxed from 0.2
+            if unique_ratio < 0.25:
                 logger.warning(
-                    f"[loop_detect] Strategy 1 (Unique Ratio): {unique_ratio:.2%} < 25%. Tokens: {len(set(window))} unique / {len(window)} total. Sample: {''.join(window[-10:])}"
+                    f"[loop_detect] Strategy 1 (Unique Ratio): {unique_ratio:.2%} < 25%. "
+                    f"Tokens: {len(set(window))} unique / {len(window)} total. "
+                    f"Sample: {''.join(window[-10:])}"
                 )
                 return True
 
@@ -75,7 +80,8 @@ class DeepSeekOCRService:
             earlier = "".join(tokens[-60:-30])
             if recent == earlier and len(recent) > 10:
                 logger.warning(
-                    f"[loop_detect] Strategy 2 (Window Match): 30-token window repeated exactly. Match: '{recent[:30]}...'"
+                    f"[loop_detect] Strategy 2 (Window Match): "
+                    f"30-token window repeated exactly. Match: '{recent[:30]}...'"
                 )
                 return True
 
@@ -87,20 +93,20 @@ class DeepSeekOCRService:
             unique_chars = len(set(recent_text))
             if unique_chars < 15:
                 logger.warning(
-                    f"[loop_detect] Strategy 3a (Char Uniqueness): {unique_chars} unique chars in {len(recent_text)} length text. Sample: '{recent_text[-30:]}'"
+                    f"[loop_detect] Strategy 3a (Char Uniqueness): "
+                    f"{unique_chars} unique chars in {len(recent_text)} length text. "
+                    f"Sample: '{recent_text[-30:]}'"
                 )
                 return True
 
-        # 3b. Long Substring Repetition (e.g. "如果某市的市名是“市” | " repeating)
-        # If a sequence of >10 chars repeats 3+ times in the recent text, it's a loop.
+        # 3b. Long Substring Repetition
         if len(recent_text) >= 60:
-            # Check for patterns of length 15 to 40 characters
             for p_len in range(15, 40):
                 pattern = recent_text[-p_len:]
-                # If the exact pattern appears 3 consecutive times at the end
                 if recent_text.endswith(pattern * 3):
                     logger.warning(
-                        f"[loop_detect] Strategy 3b (Substring Repeat): Pattern '{pattern}' (len {p_len}) repeated 3+ times at end."
+                        f"[loop_detect] Strategy 3b (Substring Repeat): "
+                        f"Pattern '{pattern}' (len {p_len}) repeated 3+ times at end."
                     )
                     return True
 
@@ -108,7 +114,8 @@ class DeepSeekOCRService:
         for pattern in self.LOOP_PATTERNS:
             if pattern.search(recent_text):
                 logger.warning(
-                    f"[loop_detect] Strategy 4 (Regex Pattern): Matched pattern {pattern.pattern} on text: '{recent_text[-40:]}'"
+                    f"[loop_detect] Strategy 4 (Regex Pattern): "
+                    f"Matched pattern {pattern.pattern} on text: '{recent_text[-40:]}'"
                 )
                 return True
 
@@ -253,8 +260,16 @@ class DeepSeekOCRService:
             f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars"
         )
 
+        # Guard: if output is suspiciously short, it's likely hallucination
         if len(result_text) < 20 and response_tokens < 50:
-            raise Exception("EmptyOutputError")
+            logger.warning(
+                f"[process] EmptyOutput: only {len(result_text)} chars / "
+                f"{response_tokens} tokens — likely hallucination"
+            )
+            raise EmptyOutputError(
+                f"Output too short: {len(result_text)} chars, "
+                f"{response_tokens} tokens"
+            )
 
         return {
             "text": result_text,
@@ -275,8 +290,8 @@ class DeepSeekOCRService:
     ) -> dict:
         """Process an image through DeepSeek OCR.
 
-        Auto-retry: if grounding mode fails (loop/timeout/error),
-        automatically retries with "Free OCR." prompt.
+        Pipeline: Open → EXIF → RGB → Resize → Grid Removal → Enhance → Save → OCR
+        Auto-retry: if grounding mode fails, fallback to "Free OCR." prompt.
         """
         start_time = time.time()
         tmp_path = None
@@ -285,13 +300,11 @@ class DeepSeekOCRService:
 
         try:
             # --- Image preprocessing ---
-            # Pipeline: Open → EXIF Transpose → RGB → Resize → Enhance → Smart Crop → Save
             preprocess_start = time.time()
-            from PIL import ImageOps
             with Image.open(BytesIO(file_content)) as img:
-                # Apply EXIF rotation automatically (crucial for smartphone photos)
+                # Step 0: Fix EXIF rotation (smartphone photos)
                 img = ImageOps.exif_transpose(img)
-                
+
                 original_size = img.size
                 logger.info(
                     f"[process] Image: {original_size[0]}x{original_size[1]} | "
@@ -301,19 +314,26 @@ class DeepSeekOCRService:
                 if img.mode != "RGB":
                     img = img.convert("RGB")
 
-                # Step 1: Resize (critical for 4K+ images, preserves quality via LANCZOS)
+                # Step 1: Resize (4K+ → max 2048px via LANCZOS)
                 img = auto_resize_image(img, settings.MAX_LONG_SIDE)
+                logger.info(
+                    f"[process] After resize: {img.size[0]}x{img.size[1]}"
+                )
 
-                # Step 2: Enhance (Contrast + Sharpness)
-                img = enhance_for_ocr(img, original_resolution=original_size)
+                # Step 2: Remove grid lines (if detected)
+                img = remove_grid_lines(img)
 
-                # Bỏ qua Smart Crop theo yêu cầu để lấy toàn bộ trang giấy
-                crop_info = {"cropped": False, "skip_reason": "Disabled by user"}
+                # Step 3: Enhance (Contrast + Sharpness)
+                img = enhance_for_ocr(img)
 
                 processed_size = img.size
-                save_quality = calculate_save_quality(len(file_content), processed_size)
+                save_quality = calculate_save_quality(
+                    len(file_content), processed_size
+                )
 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".jpg"
+                ) as tmp:
                     tmp_path = tmp.name
                     img.save(tmp_path, format="JPEG", quality=save_quality)
 
@@ -335,16 +355,10 @@ class DeepSeekOCRService:
                     prompt,
                     start_time,
                 )
-            except (TokenLoopError, asyncio.TimeoutError, Exception) as first_error:
+            except (TokenLoopError, asyncio.TimeoutError, EmptyOutputError) as first_error:
                 # --- Attempt 2: Auto-retry with Free OCR if grounding failed ---
                 is_grounding = "<|grounding|>" in prompt
-                is_retryable = (
-                    isinstance(first_error, (TokenLoopError, asyncio.TimeoutError))
-                    or "RemoteProtocolError" in str(type(first_error).__name__)
-                    or "EmptyOutputError" in str(first_error)
-                )
-
-                if is_grounding and is_retryable:
+                if is_grounding:
                     logger.warning(
                         f"[process] RETRY | '{prompt}' failed "
                         f"({type(first_error).__name__}). "
@@ -361,7 +375,7 @@ class DeepSeekOCRService:
                         )
                         result["retried"] = True
                         result["original_prompt_error"] = (
-                            f"{type(first_error).__name__}"
+                            type(first_error).__name__
                         )
                         return result
                     except Exception as retry_error:
@@ -379,7 +393,9 @@ class DeepSeekOCRService:
                 os.unlink(tmp_path)
 
     @staticmethod
-    def _raise_http_error(error: Exception, filename: str, start_time: float):
+    def _raise_http_error(
+        error: Exception, filename: str, start_time: float
+    ) -> None:
         """Convert exception to appropriate HTTPException."""
         elapsed = round(time.time() - start_time, 3)
 
@@ -406,6 +422,19 @@ class DeepSeekOCRService:
                 detail=(
                     f"OCR detected repetitive output after {elapsed}s. "
                     f"Try 'Free OCR.' prompt for this image."
+                ),
+            )
+
+        if isinstance(error, EmptyOutputError):
+            logger.warning(
+                f"[process] EMPTY OUTPUT | File: {filename} | "
+                f"Elapsed: {elapsed}s | {error}"
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"OCR returned empty/minimal output after {elapsed}s. "
+                    f"The image may be too noisy for OCR."
                 ),
             )
 

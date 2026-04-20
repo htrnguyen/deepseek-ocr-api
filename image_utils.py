@@ -1,5 +1,8 @@
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance
 from io import BytesIO
+import numpy as np
+import cv2
+from logger import logger
 
 
 def auto_resize_image(image: Image.Image, max_long_side: int) -> Image.Image:
@@ -18,33 +21,127 @@ def auto_resize_image(image: Image.Image, max_long_side: int) -> Image.Image:
     return image
 
 
-def enhance_for_ocr(
-    image: Image.Image,
-    original_resolution: tuple[int, int] | None = None,
-) -> Image.Image:
-    """Enhance image for OCR with adaptive processing based on image quality.
+def detect_grid_paper(cv_gray: np.ndarray) -> bool:
+    """Detect if an image contains grid/graph paper lines.
 
-    High-res images (>= 2000px): Skip sharpening — already sharp enough.
-        Adding sharpness creates artifacts that confuse the vision encoder.
-    Low-res images (< 2000px): Apply moderate contrast + sharpness boost.
+    Uses Hough Line Transform to count horizontal and vertical lines.
+    Grid paper typically has many evenly-spaced lines in both directions.
 
-    Args:
-        image: PIL Image to enhance.
-        original_resolution: Original (width, height) before any resize.
-            If None, uses current image size.
+    Returns True if grid pattern is detected.
     """
-    # Use the current image size (after resize) to determine sharpness
-    longest_side = max(image.size)
+    h, w = cv_gray.shape
 
+    # Edge detection
+    edges = cv2.Canny(cv_gray, 50, 150, apertureSize=3)
+
+    # Detect lines with HoughLinesP
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80,
+                            minLineLength=int(min(h, w) * 0.15),
+                            maxLineGap=10)
+
+    if lines is None:
+        return False
+
+    h_lines = 0
+    v_lines = 0
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if angle < 10 or angle > 170:  # horizontal
+            h_lines += 1
+        elif 80 < angle < 100:  # vertical
+            v_lines += 1
+
+    is_grid = h_lines >= 8 and v_lines >= 8
+    logger.info(
+        f"[grid_detect] H-lines: {h_lines} | V-lines: {v_lines} | "
+        f"Grid detected: {is_grid}"
+    )
+    return is_grid
+
+
+def remove_grid_lines(image: Image.Image) -> Image.Image:
+    """Remove grid/graph paper lines from an image using morphological operations.
+
+    Algorithm:
+    1. Convert to grayscale
+    2. Detect horizontal lines via wide horizontal kernel
+    3. Detect vertical lines via tall vertical kernel
+    4. Combine into a grid mask
+    5. Inpaint (fill) the grid lines with surrounding background color
+    6. Return cleaned RGB image
+
+    This preserves handwriting strokes (which are short, curved, thick)
+    while removing grid lines (which are long, straight, thin).
+    """
+    # PIL → OpenCV (numpy array)
+    cv_img = np.array(image)
+    cv_gray = cv2.cvtColor(cv_img, cv2.COLOR_RGB2GRAY)
+
+    # Check if this image actually has grid lines
+    if not detect_grid_paper(cv_gray):
+        logger.info("[remove_grid] No grid pattern detected — skipping")
+        return image
+
+    logger.info("[remove_grid] Grid pattern detected — removing lines...")
+
+    # Adaptive threshold to get binary image (ink = black, paper = white)
+    binary = cv2.adaptiveThreshold(
+        cv_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, blockSize=15, C=10
+    )
+
+    h, w = binary.shape
+
+    # --- Detect horizontal lines ---
+    # Kernel width = 1/20th of image width (catches long lines, ignores short strokes)
+    h_kernel_len = max(w // 20, 30)
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_kernel_len, 1))
+    h_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, h_kernel, iterations=2)
+
+    # --- Detect vertical lines ---
+    v_kernel_len = max(h // 20, 30)
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_kernel_len))
+    v_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, v_kernel, iterations=2)
+
+    # Combine horizontal + vertical = grid mask
+    grid_mask = cv2.add(h_lines, v_lines)
+
+    # Dilate slightly to ensure we cover the full line width
+    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    grid_mask = cv2.dilate(grid_mask, dilate_kernel, iterations=1)
+
+    # Inpaint: fill grid line pixels with surrounding colors
+    cleaned = cv2.inpaint(cv_img, grid_mask, inpaintRadius=3,
+                          flags=cv2.INPAINT_TELEA)
+
+    # Count how many pixels were cleaned
+    cleaned_pixels = np.count_nonzero(grid_mask)
+    total_pixels = h * w
+    cleaned_pct = cleaned_pixels / total_pixels * 100
+
+    logger.info(
+        f"[remove_grid] Removed {cleaned_pixels:,} grid pixels "
+        f"({cleaned_pct:.1f}% of image)"
+    )
+
+    # OpenCV → PIL
+    return Image.fromarray(cleaned)
+
+
+def enhance_for_ocr(image: Image.Image) -> Image.Image:
+    """Enhance image for OCR: contrast boost + sharpness recovery.
+
+    Always applies both enhancements since images are typically
+    resized to <= 2048px before this step.
+    """
     # Contrast boost — mild, always helpful
     contrast_enhancer = ImageEnhance.Contrast(image)
     image = contrast_enhancer.enhance(1.3)
 
-    # If the CURRENT image is < 2000px (which it usually is after auto_resize_image),
-    # apply sharpness to recover details lost during downscaling.
-    if longest_side <= 2048:
-        sharpness_enhancer = ImageEnhance.Sharpness(image)
-        image = sharpness_enhancer.enhance(1.5)
+    # Sharpness — recover details lost during downscaling
+    sharpness_enhancer = ImageEnhance.Sharpness(image)
+    image = sharpness_enhancer.enhance(1.5)
 
     return image
 
