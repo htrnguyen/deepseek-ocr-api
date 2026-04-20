@@ -13,11 +13,13 @@ from logger import logger
 
 class TokenLoopError(Exception):
     """Raised when repetitive token output is detected during streaming."""
+
     pass
 
 
 class EmptyOutputError(Exception):
     """Raised when OCR output is suspiciously short (likely model hallucination)."""
+
     pass
 
 
@@ -131,19 +133,19 @@ class DeepSeekOCRService:
 
         # Remove <|ref|>...<|/ref|><|det|>...<|/det|> entirely if it references an 'image'
         # Otherwise, remove the grounding line
-        pattern = r'(<\|ref\|>(.*?)<\|/ref\|><\|det\|>(.*?)<\|/det\|>)'
+        pattern = r"(<\|ref\|>(.*?)<\|/ref\|><\|det\|>(.*?)<\|/det\|>)"
         matches = re.findall(pattern, text, re.DOTALL)
-        
+
         for match in matches:
-            if '<|ref|>image<|/ref|>' in match[0]:
-                text = text.replace(match[0], '', 1)
+            if "<|ref|>image<|/ref|>" in match[0]:
+                text = text.replace(match[0], "", 1)
             else:
                 # Remove the exact matched line
-                text = re.sub(rf'(?m)^[^\n]*{re.escape(match[0])}[^\n]*\n?', '', text)
-        
+                text = re.sub(rf"(?m)^[^\n]*{re.escape(match[0])}[^\n]*\n?", "", text)
+
         # Replace mathematical symbols
-        text = text.replace('\\coloneqq', ':=').replace('\\eqqcolon', '=:')
-        
+        text = text.replace("\\coloneqq", ":=").replace("\\eqqcolon", "=:")
+
         return text.strip()
 
     def _call_ollama_streaming(
@@ -312,13 +314,13 @@ class DeepSeekOCRService:
         )
 
         # Guard: if output is suspiciously short, it's likely hallucination
-        if len(result_text) < 20 and response_tokens < 50:
+        if not result_text or (len(result_text) < 20 and response_tokens < 50):
             logger.warning(
                 f"[process] EmptyOutput: only {len(result_text)} chars / "
                 f"{response_tokens} tokens — likely hallucination"
             )
             raise EmptyOutputError(
-                f"Output too short: {len(result_text)} chars, "
+                f"Output too short or empty: {len(result_text)} chars, "
                 f"{response_tokens} tokens"
             )
 
@@ -369,9 +371,7 @@ class DeepSeekOCRService:
 
                 # Step 3: Save as JPEG (Ollama needs a file path)
                 # No resize, no enhance — let DeepSeek's Dynamic Resolution handle it
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".jpg"
-                ) as tmp:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                     tmp_path = tmp.name
                     img.save(tmp_path, format="JPEG", quality=95)
 
@@ -391,7 +391,11 @@ class DeepSeekOCRService:
                     prompt,
                     start_time,
                 )
-            except (TokenLoopError, asyncio.TimeoutError, EmptyOutputError) as first_error:
+            except (
+                TokenLoopError,
+                asyncio.TimeoutError,
+                EmptyOutputError,
+            ) as first_error:
                 logger.warning(
                     f"[process] ⚠️ Attempt 1 FAILED | prompt='{prompt}' | "
                     f"{type(first_error).__name__}"
@@ -419,11 +423,13 @@ class DeepSeekOCRService:
                         )
                         result["retried"] = True
                         result["retry_attempt"] = i
-                        result["original_prompt_error"] = (
-                            type(first_error).__name__
-                        )
+                        result["original_prompt_error"] = type(first_error).__name__
                         return result
-                    except (TokenLoopError, asyncio.TimeoutError, EmptyOutputError) as retry_error:
+                    except (
+                        TokenLoopError,
+                        asyncio.TimeoutError,
+                        EmptyOutputError,
+                    ) as retry_error:
                         logger.error(
                             f"[process] ❌ Attempt {i} FAILED | "
                             f"prompt='{fallback_prompt}' | "
@@ -439,9 +445,7 @@ class DeepSeekOCRService:
                 os.unlink(tmp_path)
 
     @staticmethod
-    def _raise_http_error(
-        error: Exception, filename: str, start_time: float
-    ) -> None:
+    def _raise_http_error(error: Exception, filename: str, start_time: float) -> None:
         """Convert exception to appropriate HTTPException."""
         elapsed = round(time.time() - start_time, 3)
 
