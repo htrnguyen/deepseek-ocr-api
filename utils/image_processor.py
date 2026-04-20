@@ -5,12 +5,12 @@ from logger import logger
 
 
 class ImageProcessor:
-    """Handle CPU-bound image operations."""
+    """Handle CPU-bound image operations optimized for Grounding & Speed."""
 
-    MAX_IMAGE_SIZE = 1080
+    MAX_IMAGE_SIZE = 1024
     MIN_IMAGE_SIZE = 150
     MAX_ASPECT_RATIO = 5.0
-    RETRY_SIZES = [1080, 720, 540]
+    RETRY_SIZES = [1024, 768, 512]
 
     @classmethod
     def preprocess_image(
@@ -58,7 +58,7 @@ class ImageProcessor:
                     f"From: {img.size} | Target Max Side: {target}px | Scale: {scale:.3f}"
                 )
 
-                img.thumbnail((target, target), Image.Resampling.BICUBIC)
+                img.thumbnail((target, target), Image.Resampling.BILINEAR)
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                 tmp_path = tmp.name
