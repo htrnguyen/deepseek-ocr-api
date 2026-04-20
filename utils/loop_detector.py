@@ -6,11 +6,11 @@ class LoopDetector:
     """Detect repetitive token output during streaming."""
 
     LOOP_PATTERNS = [
-        re.compile(r"(<td>\s*</td>){20,}"),
-        re.compile(r"(<tr>\s*</tr>){15,}"),
-        re.compile(r"(\|\s*){20,}"),
-        re.compile(r"(</td><td>){20,}"),
-        re.compile(r"(<td></td>){20,}"),
+        re.compile(r"(<td>\s*</td>){60,}"),
+        re.compile(r"(<tr>\s*</tr>){40,}"),
+        re.compile(r"(\|\s*){60,}"),
+        re.compile(r"(</td><td>){60,}"),
+        re.compile(r"(<td></td>){60,}"),
     ]
 
     @classmethod
@@ -63,10 +63,10 @@ class LoopDetector:
                     if recent_text.endswith(pattern * 3):
                         clean_pattern = re.sub(r'<[^>]+>|\s|\||-', '', pattern)
                         if len(clean_pattern) == 0:
-                            if recent_text.endswith(pattern * 25):
+                            if recent_text.endswith(pattern * 60):
                                 logger.warning(
                                     f"[loop_detect] Strategy 3b (Table Repeat) | "
-                                    f"Pattern: '{pattern}' repeated 25+ times"
+                                    f"Pattern: '{pattern}' repeated 60+ times"
                                 )
                                 return True
                         else:
