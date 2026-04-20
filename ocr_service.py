@@ -217,10 +217,24 @@ class DeepSeekOCRService:
                         # Ensure we close the generator so Ollama cancels the task immediately
                         if hasattr(stream, "close"):
                             stream.close()
-                        raise TokenLoopError(
-                            f"Loop after {len(tokens)} tokens ({elapsed}s). "
-                            f"Last: '{''.join(tokens[-8:])[:60]}...'"
-                        )
+
+                        # Partial Success Strategy
+                        # If the model generated a substantial amount of valid text before looping,
+                        # we cut off the last 100 tokens (the evaluation window) and return the rest.
+                        valid_tokens = tokens[:-100] if len(tokens) > 100 else []
+                        if len(valid_tokens) >= 50:
+                            logger.info(
+                                f"[loop_detect] Partial success: Recovered {len(valid_tokens)} "
+                                f"valid tokens before the loop."
+                            )
+                            tokens = valid_tokens
+                            response_meta["eval_count"] = len(tokens)
+                            break
+                        else:
+                            raise TokenLoopError(
+                                f"Loop after {len(tokens)} tokens ({elapsed}s). "
+                                f"Last: '{''.join(tokens[-8:])[:60]}...'"
+                            )
 
                 if chunk.get("done"):
                     response_meta = chunk
@@ -242,9 +256,20 @@ class DeepSeekOCRService:
                 )
                 if hasattr(stream, "close"):
                     stream.close()
-                raise TokenLoopError(
-                    f"Ollama loop detection after {len(tokens)} tokens ({elapsed}s)"
-                )
+
+                valid_tokens = tokens[:-100] if len(tokens) > 100 else []
+                if len(valid_tokens) >= 50:
+                    logger.info(
+                        f"[loop_detect] Partial success: Recovered {len(valid_tokens)} "
+                        f"valid tokens before Ollama's built-in loop error."
+                    )
+                    tokens = valid_tokens
+                    response_meta["eval_count"] = len(tokens)
+                    break
+                else:
+                    raise TokenLoopError(
+                        f"Ollama loop detection after {len(tokens)} tokens ({elapsed}s)"
+                    )
             raise  # Re-raise non-loop errors
         except Exception:
             if hasattr(stream, "close"):
@@ -377,9 +402,16 @@ class DeepSeekOCRService:
                 # Step 2: Convert to RGB (required for JPEG save)
                 if img.mode != "RGB":
                     img = img.convert("RGB")
+                MAX_SIZE = 1024
+                if max(img.size) > MAX_SIZE:
+                    ratio = MAX_SIZE / max(img.size)
+                    new_size = (int(img.width * ratio), int(img.height * ratio))
+                    logger.info(
+                        f"[process] Resizing from {img.size} to {new_size} (LANCZOS)"
+                    )
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
 
-                # Step 3: Save as JPEG (Ollama needs a file path)
-                # No resize, no enhance — let DeepSeek's Dynamic Resolution handle it
+                # Step 4: Save as JPEG (Ollama needs a file path)
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                     tmp_path = tmp.name
                     img.save(tmp_path, format="JPEG", quality=95)
