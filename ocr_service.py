@@ -214,6 +214,9 @@ class DeepSeekOCRService:
                             f"  {full_output[:500]}\n"
                             f"  ──────────────────────────────────────"
                         )
+                        # Ensure we close the generator so Ollama cancels the task immediately
+                        if hasattr(stream, "close"):
+                            stream.close()
                         raise TokenLoopError(
                             f"Loop after {len(tokens)} tokens ({elapsed}s). "
                             f"Last: '{''.join(tokens[-8:])[:60]}...'"
@@ -237,10 +240,16 @@ class DeepSeekOCRService:
                     f"  {full_output[:500]}\n"
                     f"  ──────────────────────────────────────"
                 )
+                if hasattr(stream, "close"):
+                    stream.close()
                 raise TokenLoopError(
                     f"Ollama loop detection after {len(tokens)} tokens ({elapsed}s)"
                 )
             raise  # Re-raise non-loop errors
+        except Exception:
+            if hasattr(stream, "close"):
+                stream.close()
+            raise
 
         full_text = "".join(tokens)
 
