@@ -265,7 +265,7 @@ class DeepSeekOCRService:
                     )
                     tokens = valid_tokens
                     response_meta["eval_count"] = len(tokens)
-                    break
+                    pass
                 else:
                     raise TokenLoopError(
                         f"Ollama loop detection after {len(tokens)} tokens ({elapsed}s)"
