@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepSeek OCR API Tester</title>
+    <style>
+        :root {
+            --mac-bg: #f5f5f7;
+            --mac-surface: #ffffff;
+            --mac-border: #d2d2d7;
+            --mac-text: #1d1d1f;
+            --mac-blue: #0066cc;
+            --mac-blue-hover: #0077ed;
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        body {
+            font-family: var(--font-family);
+            background-color: var(--mac-bg);
+            color: var(--mac-text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            height: 100vh;
+            box-sizing: border-box;
+            gap: 20px;
+        }
+        .panel {
+            background: var(--mac-surface);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.05);
+            padding: 24px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--mac-border);
+            overflow: hidden;
+        }
+        h2 { margin-top: 0; font-size: 1.2rem; font-weight: 600; color: var(--mac-text); }
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; }
+        .btn {
+            background-color: var(--mac-blue);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn:hover { background-color: var(--mac-blue-hover); }
+        .btn:disabled { background-color: var(--mac-border); cursor: not-allowed; }
+        .btn-secondary { background-color: white; color: var(--mac-text); border: 1px solid var(--mac-border); }
+        .btn-secondary:hover { background-color: #f5f5f7; }
+        
+        .upload-area {
+            border: 2px dashed var(--mac-border);
+            border-radius: 10px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            margin-bottom: 20px;
+            transition: border-color 0.2s;
+        }
+        .upload-area:hover { border-color: var(--mac-blue); }
+        .upload-area input { display: none; }
+        
+        .preview-container {
+            flex: 1;
+            border: 1px solid var(--mac-border);
+            border-radius: 8px;
+            background: #fdfdfd;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+        .preview-container img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        
+        .result-area {
+            flex: 1;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
+            background: #fbfbfd;
+            border: 1px solid var(--mac-border);
+            border-radius: 8px;
+            padding: 16px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        
+        select {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--mac-border);
+            font-size: 14px;
+            background: white;
+            outline: none;
+        }
+        select:focus { border-color: var(--mac-blue); box-shadow: 0 0 0 3px rgba(0,102,204,0.2); }
+        
+        .loader {
+            display: none;
+            width: 16px;
+            height: 16px;
+            border: 3px solid rgba(0,102,204,0.2);
+            border-radius: 50%;
+            border-top-color: var(--mac-blue);
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div class="panel">
+        <h2>OCR Input</h2>
+        <label class="upload-area" id="drop-zone">
+            <input type="file" id="file-input" accept="image/*">
+            <span style="font-size: 1.1rem; color: #86868b;">Click to upload or drag & drop</span>
+            <div style="font-size: 0.9rem; color: #a1a1a6; margin-top: 8px;">JPG, PNG, WebP (Max 10MB)</div>
+        </label>
+        
+        <div class="controls">
+            <select id="endpoint">
+                <option value="/ocr">DeepSeek OCR (/ocr)</option>
+                <option value="/paddle-ocr">Paddle OCR (/paddle-ocr)</option>
+            </select>
+            <button class="btn" id="run-btn" disabled>Run OCR</button>
+            <div class="loader" id="loader"></div>
+        </div>
+
+        <div class="preview-container">
+            <img id="image-preview" src="" style="display: none;">
+            <span id="placeholder-text" style="color: #86868b;">No image selected</span>
+        </div>
+    </div>
+
+    <div class="panel">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h2>Result Output</h2>
+            <button class="btn btn-secondary" id="copy-btn" style="padding: 4px 10px; font-size: 12px;">Copy Markdown</button>
+        </div>
+        <div class="result-area" id="result-output">Awaiting request...</div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('file-input');
+        const dropZone = document.getElementById('drop-zone');
+        const imgPreview = document.getElementById('image-preview');
+        const placeholderText = document.getElementById('placeholder-text');
+        const runBtn = document.getElementById('run-btn');
+        const resultOutput = document.getElementById('result-output');
+        const endpointSelect = document.getElementById('endpoint');
+        const loader = document.getElementById('loader');
+        const copyBtn = document.getElementById('copy-btn');
+        let selectedFile = null;
+
+        function handleFile(file) {
+            if (file && file.type.startsWith('image/')) {
+                selectedFile = file;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    imgPreview.src = e.target.result;
+                    imgPreview.style.display = 'block';
+                    placeholderText.style.display = 'none';
+                    runBtn.disabled = false;
+                    resultOutput.textContent = 'Ready to process.';
+                }
+                reader.readAsDataURL(file);
+            }
+        }
+
+        fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+        
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = 'var(--mac-blue)';
+        });
+        
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = 'var(--mac-border)';
+        });
+        
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = 'var(--mac-border)';
+            if (e.dataTransfer.files.length > 0) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        runBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+            
+            // Append default prompt if using /ocr
+            if (endpointSelect.value === '/ocr') {
+                formData.append('prompt', '<|grounding|>Convert the document to markdown.');
+            }
+
+            const endpoint = endpointSelect.value;
+
+            runBtn.disabled = true;
+            loader.style.display = 'block';
+            resultOutput.textContent = 'Processing...\nThis may take a few seconds.';
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.markdown) {
+                    resultOutput.textContent = data.markdown;
+                } else if (data.text) {
+                    resultOutput.textContent = data.text;
+                } else {
+                    resultOutput.textContent = JSON.stringify(data, null, 2);
+                }
+            } catch (error) {
+                resultOutput.textContent = 'Error: ' + error.message;
+            } finally {
+                runBtn.disabled = false;
+                loader.style.display = 'none';
+            }
+        });
+
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(resultOutput.textContent);
+            copyBtn.textContent = 'Copied!';
+            setTimeout(() => { copyBtn.textContent = 'Copy Markdown'; }, 2000);
+        });
+    </script>
+</body>
+</html>

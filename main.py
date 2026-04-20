@@ -2,6 +2,8 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -28,7 +30,9 @@ async def _ollama_keepalive_loop():
             elapsed = round(time.time() - start, 1)
 
             if any(settings.OLLAMA_MODEL in name for name in running):
-                logger.info(f"[keepalive] | Ollama OK | Model loaded | Time: {elapsed}s")
+                logger.info(
+                    f"[keepalive] | Ollama OK | Model loaded | Time: {elapsed}s"
+                )
             else:
                 logger.warning("[keepalive] | Model not loaded | Reloading...")
                 await asyncio.wait_for(
@@ -46,7 +50,9 @@ async def _ollama_keepalive_loop():
             logger.info("[keepalive] | Task cancelled")
             break
         except Exception as e:
-            logger.error(f"[keepalive] | Ollama FAILED | Error: {type(e).__name__}: {e}")
+            logger.error(
+                f"[keepalive] | Ollama FAILED | Error: {type(e).__name__}: {e}"
+            )
 
 
 @asynccontextmanager
@@ -114,6 +120,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/")
+async def serve_frontend():
+    return FileResponse("static/index.html")
 
 
 @app.post("/ocr")
