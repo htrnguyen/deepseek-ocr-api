@@ -60,9 +60,15 @@ class ImageProcessor:
                     f"From: {img.size} | Target Max Side: {target}px | Scale: {scale:.3f}"
                 )
 
+                img = ImageOps.autocontrast(img, cutoff=2)
+
+                if max(img.size) > target * 2:
+                    img.thumbnail((target * 2, target * 2), Image.Resampling.BILINEAR)
+
                 img.thumbnail((target, target), Image.Resampling.LANCZOS)
+
                 img = img.filter(
-                    ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3)
+                    ImageFilter.UnsharpMask(radius=2, percent=250, threshold=0)
                 )
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
