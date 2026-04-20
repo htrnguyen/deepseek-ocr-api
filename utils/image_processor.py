@@ -1,6 +1,6 @@
 import tempfile
 from io import BytesIO
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFilter
 from logger import logger
 
 
@@ -14,7 +14,10 @@ class ImageProcessor:
 
     @classmethod
     def preprocess_image(
-        cls, file_content: bytes, max_size: int | None = None, skip_validation: bool = False
+        cls,
+        file_content: bytes,
+        max_size: int | None = None,
+        skip_validation: bool = False,
     ) -> tuple[str, tuple[int, int], float]:
         """Image preprocessing (Validate, Resize, Convert, Save). Returns tmp_path, original_size, scale."""
         target = max_size or cls.MAX_IMAGE_SIZE
@@ -50,16 +53,19 @@ class ImageProcessor:
             scale = 1.0
             if max(img.size) > target:
                 scale = target / max(img.size)
-                new_size = (int(img.width * scale), int(img.height * scale))
                 logger.info(
-                    f"[preprocess] | Resizing (LANCZOS) | "
-                    f"From: {img.size} | To: {new_size} | Scale: {scale:.3f}"
+                    f"[preprocess] | Resizing (Thumbnail + UnsharpMask) | "
+                    f"From: {img.size} | Target Max Side: {target}px | Scale: {scale:.3f}"
                 )
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+                img.thumbnail((target, target), Image.Resampling.LANCZOS)
+
+                img = img.filter(
+                    ImageFilter.UnsharpMask(radius=1.5, percent=70, threshold=3)
+                )
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                 tmp_path = tmp.name
                 img.save(tmp_path, format="JPEG", quality=95)
 
             return tmp_path, original_size, scale
-
