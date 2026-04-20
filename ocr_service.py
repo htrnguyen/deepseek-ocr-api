@@ -238,90 +238,66 @@ class DeepSeekOCRService:
         filename: str,
         prompt: str,
     ) -> dict:
-        """Process an image through DeepSeek OCR."""
+        """Process an image through DeepSeek OCR with progressive downscale retry."""
         start_time = time.time()
-        tmp_path = None
+        last_error = None
 
         logger.info(f"[process] | [Step 1/3] Pipeline Started | File: {filename}")
 
-        try:
-            preprocess_start = time.time()
+        for attempt, max_size in enumerate(ImageProcessor.RETRY_SIZES, start=1):
+            tmp_path = None
             try:
-                tmp_path, original_size, _ = await asyncio.to_thread(
-                    ImageProcessor.preprocess_image, file_content
-                )
-            except ValueError as e:
-                logger.warning(
-                    f"[process] | Image Rejected | File: {filename} | {e}"
-                )
-                raise HTTPException(status_code=400, detail=str(e))
+                try:
+                    tmp_path, original_size, _ = await asyncio.to_thread(
+                        ImageProcessor.preprocess_image,
+                        file_content,
+                        max_size,
+                        attempt > 1,
+                    )
+                except ValueError as e:
+                    logger.warning(
+                        f"[process] | Image Rejected | File: {filename} | {e}"
+                    )
+                    raise HTTPException(status_code=400, detail=str(e))
 
-            preprocess_time = round(time.time() - preprocess_start, 3)
-            saved_size = os.path.getsize(tmp_path) / 1024
-            logger.info(
-                f"[process] | [Step 2/3] Image Prepared | File: {filename} | "
-                f"Size: {original_size[0]}x{original_size[1]} | "
-                f"Saved: {saved_size:.1f} KB | Time: {preprocess_time}s"
-            )
+                saved_size = os.path.getsize(tmp_path) / 1024
+                logger.info(
+                    f"[process] | [Step 2/3] Image Prepared | File: {filename} | "
+                    f"Original: {original_size[0]}x{original_size[1]} | "
+                    f"Target: {max_size}px | Saved: {saved_size:.1f} KB"
+                )
 
-            try:
-                return await self._process_single(
+                result = await self._process_single(
                     tmp_path,
                     original_size,
                     filename,
                     prompt,
                     start_time,
                 )
-            except (
-                TokenLoopError,
-                asyncio.TimeoutError,
-                EmptyOutputError,
-            ) as first_error:
+
+                if attempt > 1:
+                    result["retried"] = True
+                    result["retry_attempt"] = attempt
+                    result["retry_max_size"] = max_size
+
+                return result
+
+            except (TokenLoopError, asyncio.TimeoutError, EmptyOutputError) as e:
+                last_error = e
                 logger.warning(
-                    f"[process] | Attempt 1 FAILED | File: {filename} | "
-                    f"Prompt: '{prompt}' | Error: {type(first_error).__name__}"
+                    f"[process] | Attempt {attempt}/{len(ImageProcessor.RETRY_SIZES)} FAILED | "
+                    f"File: {filename} | Target: {max_size}px | "
+                    f"Error: {type(e).__name__}"
                 )
 
-                fallback_prompts = []
-                if prompt != settings.PROMPT_GENERAL_OCR:
-                    fallback_prompts.append(settings.PROMPT_GENERAL_OCR)
-                if prompt != settings.PROMPT_FREE_OCR:
-                    fallback_prompts.append(settings.PROMPT_FREE_OCR)
+            except HTTPException:
+                raise
 
-                for i, fallback_prompt in enumerate(fallback_prompts, start=2):
-                    try:
-                        logger.warning(
-                            f"[process] | RETRY #{i} | File: {filename} | "
-                            f"Trying '{fallback_prompt}'..."
-                        )
-                        result = await self._process_single(
-                            tmp_path,
-                            original_size,
-                            filename,
-                            fallback_prompt,
-                            start_time,
-                        )
-                        result["retried"] = True
-                        result["retry_attempt"] = i
-                        result["original_prompt_error"] = type(first_error).__name__
-                        return result
-                    except (
-                        TokenLoopError,
-                        asyncio.TimeoutError,
-                        EmptyOutputError,
-                    ) as retry_error:
-                        logger.error(
-                            f"[process] | Attempt {i} FAILED | File: {filename} | "
-                            f"Prompt: '{fallback_prompt}' | "
-                            f"Error: {type(retry_error).__name__}: {retry_error}"
-                        )
-                        continue
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
-                self._raise_http_error(first_error, filename, start_time)
-
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        self._raise_http_error(last_error, filename, start_time)
 
     @staticmethod
     def _raise_http_error(error: Exception, filename: str, start_time: float) -> None:
