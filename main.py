@@ -40,6 +40,7 @@ async def _ollama_keepalive_loop():
                         model=settings.OLLAMA_MODEL,
                         prompt="",
                         keep_alive=-1,
+                        options={"num_ctx": settings.OLLAMA_NUM_CTX},
                     ),
                     timeout=180,
                 )
@@ -80,6 +81,7 @@ async def lifespan(app: FastAPI):
                     model=settings.OLLAMA_MODEL,
                     prompt="",
                     keep_alive=-1,
+                    options={"num_ctx": settings.OLLAMA_NUM_CTX},
                 ),
                 timeout=180,
             )

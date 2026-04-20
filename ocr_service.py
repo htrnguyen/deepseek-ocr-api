@@ -30,33 +30,52 @@ class DeepSeekOCRService:
 
     # Patterns that indicate a token loop
     LOOP_PATTERNS = [
-        re.compile(r"(<td>\s*</td>){8,}"),             # Empty table cells
-        re.compile(r"(<tr>\s*</tr>){5,}"),              # Empty table rows
-        re.compile(r"(\|\s*){15,}"),                    # Markdown table pipes
-        re.compile(r"(</td><td>){8,}"),                 # Alternating td tags
-        re.compile(r"(.{3,}?)\1{4,}"),                  # Any 3+ char pattern repeated 4+ times
-        re.compile(r"(<td></td>){6,}"),                 # Compact empty cells
+        re.compile(r"(<td>\s*</td>){6,}"),              # Empty table cells
+        re.compile(r"(<tr>\s*</tr>){4,}"),               # Empty table rows
+        re.compile(r"(\|\s*){12,}"),                     # Markdown table pipes
+        re.compile(r"(</td><td>){6,}"),                  # Alternating td tags
+        re.compile(r"(<td></td>){5,}"),                  # Compact empty cells
     ]
 
     def __init__(self):
         self.model = settings.OLLAMA_MODEL
 
     def _detect_token_loop(self, tokens: list[str]) -> bool:
-        """Detect repetitive output using window comparison + pattern matching.
+        """Detect repetitive output using 4 strategies.
 
-        Runs every 10 tokens for aggressive early detection.
+        Strategy 1: Unique token ratio — catches ANY repetition pattern
+        Strategy 2: Window comparison — exact match of consecutive windows
+        Strategy 3: Character uniqueness — very few unique chars = loop
+        Strategy 4: Regex patterns — known HTML/Markdown loop patterns
         """
         if len(tokens) < 20:
             return False
 
-        # Strategy 1: Exact window match (last 10 vs previous 10)
-        recent = "".join(tokens[-10:])
-        earlier = "".join(tokens[-20:-10])
-        if recent == earlier and len(recent) > 8:
-            return True
+        # Strategy 1: Unique token ratio (MOST IMPORTANT)
+        # In healthy generation, ~60-90% of tokens are unique
+        # In a loop, same tokens repeat → <20% unique
+        window = tokens[-50:] if len(tokens) >= 50 else tokens
+        if len(window) >= 30:
+            unique_ratio = len(set(window)) / len(window)
+            if unique_ratio < 0.2:
+                return True
 
-        # Strategy 2: Known loop patterns in recent output
-        recent_text = "".join(tokens[-30:]) if len(tokens) >= 30 else "".join(tokens)
+        # Strategy 2: Window comparison (last 20 vs previous 20)
+        if len(tokens) >= 40:
+            recent = "".join(tokens[-20:])
+            earlier = "".join(tokens[-40:-20])
+            if recent == earlier and len(recent) > 10:
+                return True
+
+        # Strategy 3: Character uniqueness on recent text
+        # Loop output has very few unique characters relative to length
+        recent_text = "".join(tokens[-60:]) if len(tokens) >= 60 else "".join(tokens)
+        if len(recent_text) > 100:
+            unique_chars = len(set(recent_text))
+            if unique_chars < 20:
+                return True
+
+        # Strategy 4: Known HTML/Markdown patterns
         for pattern in self.LOOP_PATTERNS:
             if pattern.search(recent_text):
                 return True
