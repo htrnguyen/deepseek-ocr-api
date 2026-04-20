@@ -63,10 +63,10 @@ class LoopDetector:
                     if recent_text.endswith(pattern * 3):
                         clean_pattern = re.sub(r'<[^>]+>|\s|\||-', '', pattern)
                         if len(clean_pattern) == 0:
-                            if recent_text.endswith(pattern * 8):
+                            if recent_text.endswith(pattern * 25):
                                 logger.warning(
                                     f"[loop_detect] Strategy 3b (Table Repeat) | "
-                                    f"Pattern: '{pattern}' repeated 8+ times"
+                                    f"Pattern: '{pattern}' repeated 25+ times"
                                 )
                                 return True
                         else:
