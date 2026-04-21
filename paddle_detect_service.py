@@ -1,0 +1,120 @@
+import time
+import os
+import asyncio
+
+from fastapi import HTTPException
+
+from config import settings
+from logger import logger
+from utils.image_processor import ImageProcessor
+
+
+class PaddleDetectService:
+    """Text detection service using PaddleOCR PP-OCRv5_server_det.
+
+    Only runs the detection model (no recognition) → extremely fast.
+    Returns polygon bounding boxes + confidence scores for every text region.
+    """
+
+    def __init__(self, model_name: str = "PP-OCRv5_server_det"):
+        self._model = None
+        self._model_name = model_name
+
+    def _load_model(self):
+        """Lazy-load the TextDetection model on first request."""
+        if self._model is not None:
+            return
+
+        from paddleocr import TextDetection
+
+        logger.info(
+            f"[paddle_detect] | Lazy-loading TextDetection model: {self._model_name}"
+        )
+        self._model = TextDetection(model_name=self._model_name)
+        logger.info("[paddle_detect] | TextDetection model loaded successfully")
+
+    async def detect(
+        self,
+        file_content: bytes,
+        filename: str,
+    ) -> dict:
+        """Detect text regions in an image. Returns boxes in original-image coordinates."""
+
+        # Ensure model is loaded (blocking, but only once)
+        if self._model is None:
+            await asyncio.to_thread(self._load_model)
+
+        start_time = time.time()
+        tmp_path = None
+
+        try:
+            # --- Step 1: Preprocess image ---
+            try:
+                tmp_path, original_size, scale = await asyncio.to_thread(
+                    ImageProcessor.preprocess_image, file_content
+                )
+            except ValueError as e:
+                logger.warning(
+                    f"[paddle_detect] | Image Rejected | File: {filename} | {e}"
+                )
+                raise HTTPException(status_code=400, detail=str(e))
+
+            logger.info(
+                f"[paddle_detect] | Image prepared | File: {filename} | "
+                f"Original: {original_size[0]}x{original_size[1]} | Scale: {scale:.3f}"
+            )
+
+            # --- Step 2: Run detection ---
+            det_start = time.time()
+            results = await asyncio.to_thread(
+                self._model.predict, tmp_path, batch_size=1
+            )
+            det_time = round(time.time() - det_start, 3)
+
+            # --- Step 3: Parse results → remap to original coords ---
+            all_boxes = []
+            for res in results:
+                polys = res.get("dt_polys", [])
+                scores = res.get("dt_scores", [])
+
+                for i, poly in enumerate(polys):
+                    score = scores[i] if i < len(scores) else 0.0
+
+                    # Remap resized coords → original image coords
+                    if scale < 1.0:
+                        poly_orig = [[int(x / scale), int(y / scale)] for x, y in poly]
+                    else:
+                        poly_orig = [[int(x), int(y)] for x, y in poly]
+
+                    # Also compute axis-aligned bounding rect for convenience
+                    xs = [p[0] for p in poly_orig]
+                    ys = [p[1] for p in poly_orig]
+                    bbox = [min(xs), min(ys), max(xs), max(ys)]
+
+                    all_boxes.append(
+                        {
+                            "poly": poly_orig,
+                            "bbox": bbox,
+                            "score": round(float(score), 4),
+                        }
+                    )
+
+            process_time = round(time.time() - start_time, 3)
+
+            logger.info(
+                f"[paddle_detect] | Detection completed | File: {filename} | "
+                f"Det time: {det_time}s | Total: {process_time}s | "
+                f"Found: {len(all_boxes)} text region(s)"
+            )
+
+            return {
+                "box_count": len(all_boxes),
+                "boxes": all_boxes,
+                "original_size": f"{original_size[0]}x{original_size[1]}",
+                "detection_time": f"{det_time}s",
+                "processing_time": f"{process_time}s",
+            }
+
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)

@@ -19,6 +19,24 @@ class DeepSeekOCRService:
         self.model = settings.OLLAMA_MODEL
         self.doclayout_model = doclayout_model
 
+    @staticmethod
+    def _truncate_at_clean_boundary(tokens: list[str]) -> str:
+        """Truncate at last complete grounding tag to preserve bbox data."""
+        full_text = "".join(tokens)
+
+        # Find last complete <|/det|> closing tag
+        marker = "<|/det|>"
+        last_close = full_text.rfind(marker)
+        if last_close != -1:
+            cut = last_close + len(marker)
+            if cut < len(full_text) and full_text[cut] == "\n":
+                cut += 1
+            return full_text[:cut]
+
+        # No grounding tags — fallback: remove ~50 tokens from end
+        tail = "".join(tokens[-50:]) if len(tokens) > 50 else ""
+        return full_text[: len(full_text) - len(tail)]
+
     def _call_ollama_streaming(
         self,
         tmp_path: str,
@@ -82,16 +100,18 @@ class DeepSeekOCRService:
                         if hasattr(stream, "close"):
                             stream.close()
 
-                        # Cut the last 50 tokens (the detected loop)
-                        valid_tokens = tokens[:-50] if len(tokens) > 50 else []
-                        if len(valid_tokens) >= 20:
+                        # Smart truncation: cut at last complete grounding tag
+                        valid_text = self._truncate_at_clean_boundary(tokens)
+                        if len(valid_text) >= 30:
                             logger.info(
-                                f"[loop_detect] | Partial Success | Recovered {len(valid_tokens)} "
-                                f"valid tokens before the loop"
+                                f"[loop_detect] | Partial Success | Recovered {len(valid_text)} "
+                                f"chars before the loop"
                             )
-                            tokens = valid_tokens
-                            response_meta["eval_count"] = len(tokens)
-                            break
+                            return {
+                                "text": valid_text,
+                                "prompt_eval_count": response_meta.get("prompt_eval_count", 0) or 0,
+                                "eval_count": len(tokens),
+                            }
                         else:
                             raise TokenLoopError(
                                 f"Loop after {len(tokens)} tokens ({elapsed}s). "
@@ -118,15 +138,14 @@ class DeepSeekOCRService:
                 if hasattr(stream, "close"):
                     stream.close()
 
-                valid_tokens = tokens[:-50] if len(tokens) > 50 else []
-                if len(valid_tokens) >= 20:
+                valid_text = self._truncate_at_clean_boundary(tokens)
+                if len(valid_text) >= 30:
                     logger.info(
-                        f"[loop_detect] | Partial Success | Recovered {len(valid_tokens)} "
-                        f"valid tokens before Ollama's built-in loop error"
+                        f"[loop_detect] | Partial Success | Recovered {len(valid_text)} "
+                        f"chars before Ollama's built-in loop error"
                     )
-                    tokens = valid_tokens
                     return {
-                        "text": "".join(tokens),
+                        "text": valid_text,
                         "prompt_eval_count": response_meta.get("prompt_eval_count", 0)
                         or 0,
                         "eval_count": len(tokens),
@@ -199,8 +218,27 @@ class DeepSeekOCRService:
 
         ollama_time = round(time.time() - ollama_start, 3)
 
-        # Post-process
-        result_text = OCRPostProcessor.clean(result["text"])
+        # Extract bboxes BEFORE cleaning (grounding tags are needed)
+        raw_text = result["text"]
+        raw_bboxes = OCRPostProcessor.extract_bboxes(raw_text)
+
+        # Remap coordinates: DeepSeek normalized (0-999) → original pixels
+        orig_w, orig_h = original_size
+        bboxes = []
+        for entry in raw_bboxes:
+            x1, y1, x2, y2 = entry["bbox"]
+            bboxes.append({
+                "text": entry["text"],
+                "bbox": [
+                    int(x1 * orig_w / 999),
+                    int(y1 * orig_h / 999),
+                    int(x2 * orig_w / 999),
+                    int(y2 * orig_h / 999),
+                ],
+            })
+
+        # Post-process: strip grounding tags
+        result_text = OCRPostProcessor.clean(raw_text)
         prompt_tokens = result["prompt_eval_count"]
         response_tokens = result["eval_count"]
         total_tokens = prompt_tokens + response_tokens
@@ -211,7 +249,8 @@ class DeepSeekOCRService:
             f"[process] | Pipeline Completed | File: {filename} | Total Time: {total_time}s | "
             f"Ollama Time: {ollama_time}s | "
             f"Tokens: {prompt_tokens}p + {response_tokens}r = {total_tokens} | "
-            f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars\n"
+            f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars | "
+            f"Bboxes: {len(bboxes)}\n"
             f"  Preview: '{result_text[:200]}'"
         )
 
@@ -227,6 +266,7 @@ class DeepSeekOCRService:
 
         return {
             "text": result_text,
+            "bboxes": bboxes,
             "original_size": f"{original_size[0]}x{original_size[1]}",
             "processing_time": f"{total_time}s",
             "ollama_time": f"{ollama_time}s",

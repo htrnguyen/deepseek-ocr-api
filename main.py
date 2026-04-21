@@ -8,11 +8,13 @@ from slowapi.util import get_remote_address
 from config import settings
 from ocr_service import DeepSeekOCRService
 from doclayout_service import DocLayoutService
+from paddle_detect_service import PaddleDetectService
 from logger import logger
 import ollama as ollama_client
 
 
 doclayout_service = DocLayoutService()
+paddle_detect_service = PaddleDetectService()
 ocr_service = DeepSeekOCRService()
 
 
@@ -107,7 +109,7 @@ async def lifespan(app: FastAPI):
     logger.info("[lifespan] | Shutdown complete")
 
 
-app = FastAPI(title="DeepSeek OCR API", version="2.4", lifespan=lifespan)
+app = FastAPI(title="DeepSeek OCR API", version="2.5", lifespan=lifespan)
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
@@ -160,6 +162,26 @@ async def paddle_ocr(request: Request, file: UploadFile = File(...)):
     return {"success": True, "filename": file.filename, **result, "status": "success"}
 
 
+@app.post("/paddle-detect")
+@limiter.limit(settings.RATE_LIMIT)
+async def paddle_detect(request: Request, file: UploadFile = File(...)):
+    """Text detection only (no recognition) using PaddleOCR PP-OCRv5.
+
+    Returns polygon bounding boxes + confidence scores for every text region.
+    Much faster than full OCR since it skips the recognition step.
+    """
+    if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=400, detail="Only image files are supported")
+
+    content = await file.read()
+    if len(content) > settings.MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 10MB)")
+
+    result = await paddle_detect_service.detect(content, file.filename)
+
+    return {"success": True, "filename": file.filename, **result, "status": "success"}
+
+
 @app.get("/health")
 async def health():
     """Health check with Ollama model status."""
@@ -179,8 +201,9 @@ async def health():
         "status": "ok",
         "deepseek_ocr": "enabled",
         "doclayout_yolo": "enabled",
+        "paddle_detect": "enabled",
         "ollama_status": ollama_status,
-        "version": "2.4",
+        "version": "2.5",
     }
 
 
