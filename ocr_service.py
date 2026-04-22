@@ -12,8 +12,8 @@ from utils.post_processor import OCRPostProcessor
 from utils.image_processor import ImageProcessor
 
 
-class DeepSeekOCRService:
-    """OCR service using DeepSeek model via Ollama with streaming monitoring."""
+class GLMOCRService:
+    """OCR service using GLM model via Ollama with streaming monitoring."""
 
     def __init__(self, doclayout_model=None):
         self.model = settings.OLLAMA_MODEL
@@ -21,19 +21,8 @@ class DeepSeekOCRService:
 
     @staticmethod
     def _truncate_at_clean_boundary(tokens: list[str]) -> str:
-        """Truncate at last complete grounding tag to preserve bbox data."""
+        """Truncate tokens slightly to remove looping artifact."""
         full_text = "".join(tokens)
-
-        # Find last complete <|/det|> closing tag
-        marker = "<|/det|>"
-        last_close = full_text.rfind(marker)
-        if last_close != -1:
-            cut = last_close + len(marker)
-            if cut < len(full_text) and full_text[cut] == "\n":
-                cut += 1
-            return full_text[:cut]
-
-        # No grounding tags — fallback: remove ~50 tokens from end
         tail = "".join(tokens[-50:]) if len(tokens) > 50 else ""
         return full_text[: len(full_text) - len(tail)]
 
@@ -218,27 +207,9 @@ class DeepSeekOCRService:
 
         ollama_time = round(time.time() - ollama_start, 3)
 
-        # Extract bboxes BEFORE cleaning (grounding tags are needed)
-        raw_text = result["text"]
-        raw_bboxes = OCRPostProcessor.extract_bboxes(raw_text)
-
-        # Remap coordinates: DeepSeek normalized (0-999) → original pixels
-        orig_w, orig_h = original_size
+        # No bbox extraction for GLM model
+        result_text = result["text"].strip()
         bboxes = []
-        for entry in raw_bboxes:
-            x1, y1, x2, y2 = entry["bbox"]
-            bboxes.append({
-                "text": entry["text"],
-                "bbox": [
-                    int(x1 * orig_w / 999),
-                    int(y1 * orig_h / 999),
-                    int(x2 * orig_w / 999),
-                    int(y2 * orig_h / 999),
-                ],
-            })
-
-        # Post-process: strip grounding tags
-        result_text = OCRPostProcessor.clean(raw_text)
         prompt_tokens = result["prompt_eval_count"]
         response_tokens = result["eval_count"]
         total_tokens = prompt_tokens + response_tokens
@@ -281,7 +252,7 @@ class DeepSeekOCRService:
         filename: str,
         prompt: str,
     ) -> dict:
-        """Process an image through DeepSeek OCR with smart fallback strategies."""
+        """Process an image through GLM OCR with smart fallback strategies."""
         start_time = time.time()
         last_error = None
 

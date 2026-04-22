@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from config import settings
-from ocr_service import DeepSeekOCRService
+from ocr_service import GLMOCRService
 from doclayout_service import DocLayoutService
 from paddle_detect_service import PaddleDetectService
 from logger import logger
@@ -15,7 +15,7 @@ import ollama as ollama_client
 
 doclayout_service = DocLayoutService()
 paddle_detect_service = PaddleDetectService()
-ocr_service = DeepSeekOCRService()
+ocr_service = GLMOCRService()
 
 
 async def _ollama_keepalive_loop():
@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI):
     logger.info("[lifespan] | Shutdown complete")
 
 
-app = FastAPI(title="DeepSeek OCR API", version="2.5", lifespan=lifespan)
+app = FastAPI(title="GLM OCR API", version="2.5", lifespan=lifespan)
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
@@ -124,7 +124,7 @@ app.add_middleware(
 
 @app.post("/ocr")
 @limiter.limit(settings.RATE_LIMIT)
-async def deepseek_ocr(
+async def glm_ocr(
     request: Request,
     file: UploadFile = File(...),
     prompt: str = Form(settings.DEFAULT_PROMPT),
@@ -199,7 +199,7 @@ async def health():
 
     return {
         "status": "ok",
-        "deepseek_ocr": "enabled",
+        "glm_ocr": "enabled",
         "doclayout_yolo": "enabled",
         "paddle_detect": "enabled",
         "ollama_status": ollama_status,

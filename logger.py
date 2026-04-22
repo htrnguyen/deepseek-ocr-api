@@ -7,7 +7,7 @@ def setup_logger() -> logging.Logger:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    return logging.getLogger("deepseek-ocr-api")
+    return logging.getLogger("glm-ocr-api")
 
 
 logger = setup_logger()

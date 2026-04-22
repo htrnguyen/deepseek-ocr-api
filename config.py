@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE: int = 10 * 1024 * 1024
     RATE_LIMIT: str = "60/minute"
 
-    OLLAMA_MODEL: str = "deepseek-ocr"
+    OLLAMA_MODEL: str = "glm-ocr"
     OLLAMA_TIMEOUT: int = 120
     OLLAMA_NUM_CTX: int = 8192
     OLLAMA_NUM_PREDICT: int = 2048
@@ -20,8 +20,8 @@ class Settings(BaseSettings):
 
     OLLAMA_KEEPALIVE_INTERVAL: int = 300
     PROMPT_FREE_OCR: str = "Free OCR."
-    PROMPT_MARKDOWN: str = "<|grounding|>Convert the document to markdown."
-    PROMPT_GENERAL_OCR: str = "<|grounding|>OCR this image."
+    PROMPT_MARKDOWN: str = "Convert the document to markdown."
+    PROMPT_GENERAL_OCR: str = "OCR this image."
     DEFAULT_PROMPT: str = PROMPT_MARKDOWN
 
     DOC_LAYOUT_MODEL_PATH: str = (
