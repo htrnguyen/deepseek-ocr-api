@@ -1,6 +1,7 @@
 import time
 import os
 import asyncio
+import threading
 
 from doclayout_yolo import YOLOv10
 from fastapi import HTTPException
@@ -13,9 +14,16 @@ from utils.image_processor import ImageProcessor
 class DocLayoutService:
     def __init__(self):
         self.model = None
+        self._lock = threading.Lock()
 
     def _load_model(self):
-        if self.model is None:
+        if self.model is not None:
+            return
+
+        with self._lock:
+            if self.model is not None:
+                return
+
             logger.info("[doclayout_service] | Lazy-loading DocLayout-YOLO model")
             self.model = YOLOv10(settings.DOC_LAYOUT_MODEL_PATH)
             logger.info(

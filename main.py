@@ -1,7 +1,7 @@
 import asyncio
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -16,6 +16,22 @@ import ollama as ollama_client
 doclayout_service = DocLayoutService()
 paddle_detect_service = PaddleDetectService()
 ocr_service = GLMOCRService()
+
+
+async def validate_image_upload(file: UploadFile = File(...)) -> UploadFile:
+    """Dependency to validate uploaded image type and size."""
+    if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
+        raise HTTPException(
+            status_code=400, detail="Only image files (JPG, PNG, WebP) are supported"
+        )
+
+    content = await file.read()
+    if len(content) > settings.MAX_FILE_SIZE:
+        max_mb = settings.MAX_FILE_SIZE // (1024 * 1024)
+        raise HTTPException(status_code=400, detail=f"File too large (max {max_mb}MB)")
+
+    file.file_content = content
+    return file
 
 
 async def _ollama_keepalive_loop():
@@ -109,13 +125,13 @@ async def lifespan(app: FastAPI):
     logger.info("[lifespan] | Shutdown complete")
 
 
-app = FastAPI(title="GLM OCR API", version="2.5", lifespan=lifespan)
+app = FastAPI(title=settings.API_TITLE, version=settings.API_VERSION, lifespan=lifespan)
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -126,20 +142,11 @@ app.add_middleware(
 @limiter.limit(settings.RATE_LIMIT)
 async def glm_ocr(
     request: Request,
-    file: UploadFile = File(...),
+    file: UploadFile = Depends(validate_image_upload),
     prompt: str = Form(settings.DEFAULT_PROMPT),
 ):
-    if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
-        raise HTTPException(
-            status_code=400, detail="Only image files (JPG, PNG, WebP) are supported"
-        )
-
-    content = await file.read()
-    if len(content) > settings.MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File too large (max 10MB)")
-
     result = await ocr_service.process(
-        file_content=content,
+        file_content=file.file_content,
         filename=file.filename,
         prompt=prompt,
     )
@@ -149,35 +156,20 @@ async def glm_ocr(
 
 @app.post("/paddle-ocr")
 @limiter.limit(settings.RATE_LIMIT)
-async def paddle_ocr(request: Request, file: UploadFile = File(...)):
-    if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
-        raise HTTPException(status_code=400, detail="Only image files are supported")
-
-    content = await file.read()
-    if len(content) > settings.MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File too large (max 10MB)")
-
-    result = await doclayout_service.detect_figures(content, file.filename)
+async def paddle_ocr(
+    request: Request, file: UploadFile = Depends(validate_image_upload)
+):
+    result = await doclayout_service.detect_figures(file.file_content, file.filename)
 
     return {"success": True, "filename": file.filename, **result, "status": "success"}
 
 
 @app.post("/paddle-detect")
 @limiter.limit(settings.RATE_LIMIT)
-async def paddle_detect(request: Request, file: UploadFile = File(...)):
-    """Text detection only (no recognition) using PaddleOCR PP-OCRv5.
-
-    Returns polygon bounding boxes + confidence scores for every text region.
-    Much faster than full OCR since it skips the recognition step.
-    """
-    if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
-        raise HTTPException(status_code=400, detail="Only image files are supported")
-
-    content = await file.read()
-    if len(content) > settings.MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File too large (max 10MB)")
-
-    result = await paddle_detect_service.detect(content, file.filename)
+async def paddle_detect(
+    request: Request, file: UploadFile = Depends(validate_image_upload)
+):
+    result = await paddle_detect_service.detect(file.file_content, file.filename)
 
     return {"success": True, "filename": file.filename, **result, "status": "success"}
 
@@ -203,11 +195,13 @@ async def health():
         "doclayout_yolo": "enabled",
         "paddle_detect": "enabled",
         "ollama_status": ollama_status,
-        "version": "2.5",
+        "version": settings.API_VERSION,
     }
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, workers=1, log_level="info")
+    uvicorn.run(
+        "main:app", host=settings.HOST, port=settings.PORT, workers=1, log_level="info"
+    )

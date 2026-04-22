@@ -6,9 +6,7 @@ from fastapi import HTTPException
 from config import settings
 from logger import logger
 
-from utils.exceptions import TokenLoopError, EmptyOutputError
-from utils.loop_detector import LoopDetector
-from utils.post_processor import OCRPostProcessor
+from utils.exceptions import EmptyOutputError
 from utils.image_processor import ImageProcessor
 
 
@@ -18,13 +16,6 @@ class GLMOCRService:
     def __init__(self, doclayout_model=None):
         self.model = settings.OLLAMA_MODEL
         self.doclayout_model = doclayout_model
-
-    @staticmethod
-    def _truncate_at_clean_boundary(tokens: list[str]) -> str:
-        """Truncate tokens slightly to remove looping artifact."""
-        full_text = "".join(tokens)
-        tail = "".join(tokens[-50:]) if len(tokens) > 50 else ""
-        return full_text[: len(full_text) - len(tail)]
 
     def _call_ollama_streaming(
         self,
@@ -73,90 +64,21 @@ class GLMOCRService:
                         f"Time: {elapsed}s | Last: '{preview}'"
                     )
 
-                if len(tokens) >= 20 and len(tokens) % 10 == 0:
-                    if LoopDetector.detect(tokens):
-                        elapsed = round(time.time() - stream_start, 1)
-                        full_output = "".join(tokens)
-                        logger.warning(
-                            f"[loop_detect] ═══ LOOP DETECTED ═══\n"
-                            f"  Prompt: '{prompt}'\n"
-                            f"  Tokens: {len(tokens)} | Elapsed: {elapsed}s\n"
-                            f"  Full output ({len(full_output)} chars):\n"
-                            f"  ──────────────────────────────────────\n"
-                            f"  {full_output[:500]}\n"
-                            f"  ──────────────────────────────────────"
-                        )
-                        if hasattr(stream, "close"):
-                            stream.close()
-
-                        # Smart truncation: cut at last complete grounding tag
-                        valid_text = self._truncate_at_clean_boundary(tokens)
-                        if len(valid_text) >= 30:
-                            logger.info(
-                                f"[loop_detect] | Partial Success | Recovered {len(valid_text)} "
-                                f"chars before the loop"
-                            )
-                            return {
-                                "text": valid_text,
-                                "prompt_eval_count": response_meta.get("prompt_eval_count", 0) or 0,
-                                "eval_count": len(tokens),
-                            }
-                        else:
-                            raise TokenLoopError(
-                                f"Loop after {len(tokens)} tokens ({elapsed}s). "
-                                f"Last: '{''.join(tokens[-8:])[:60]}...'"
-                            )
-
                 if chunk.get("done"):
                     response_meta = chunk
 
-        except ollama.ResponseError as e:
-            if "looping" in str(e).lower():
-                elapsed = round(time.time() - stream_start, 1)
-                full_output = "".join(tokens)
-                logger.warning(
-                    f"[loop_detect] ═══ OLLAMA LOOP DETECTED ═══\n"
-                    f"  Prompt: '{prompt}'\n"
-                    f"  Tokens: {len(tokens)} | Elapsed: {elapsed}s\n"
-                    f"  Ollama error: {e}\n"
-                    f"  Output so far ({len(full_output)} chars):\n"
-                    f"  ──────────────────────────────────────\n"
-                    f"  {full_output[:500]}\n"
-                    f"  ──────────────────────────────────────"
-                )
-                if hasattr(stream, "close"):
-                    stream.close()
-
-                valid_text = self._truncate_at_clean_boundary(tokens)
-                if len(valid_text) >= 30:
-                    logger.info(
-                        f"[loop_detect] | Partial Success | Recovered {len(valid_text)} "
-                        f"chars before Ollama's built-in loop error"
-                    )
-                    return {
-                        "text": valid_text,
-                        "prompt_eval_count": response_meta.get("prompt_eval_count", 0)
-                        or 0,
-                        "eval_count": len(tokens),
-                    }
-                else:
-                    raise TokenLoopError(
-                        f"Ollama loop detection after {len(tokens)} tokens ({elapsed}s)"
-                    )
-            raise
-
-        except Exception:
+        except Exception as e:
+            logger.error(f"[streaming] | Error: {type(e).__name__}: {e}")
             if hasattr(stream, "close"):
                 stream.close()
             raise
 
         full_text = "".join(tokens)
+        eval_count = response_meta.get("eval_count", 0) or len(tokens)
 
-        eval_count = response_meta.get("eval_count", 0) or 0
         if eval_count >= settings.OLLAMA_NUM_PREDICT - 10:
-            raise TokenLoopError(
-                f"Hit token limit ({eval_count} >= {settings.OLLAMA_NUM_PREDICT}) "
-                f"— model is stuck in an infinite loop."
+            logger.warning(
+                f"[streaming] | Hit token limit ({eval_count} >= {settings.OLLAMA_NUM_PREDICT}) - Output might be truncated."
             )
 
         return {
@@ -305,7 +227,7 @@ class GLMOCRService:
 
                 return result
 
-            except (TokenLoopError, asyncio.TimeoutError, EmptyOutputError) as e:
+            except (asyncio.TimeoutError, EmptyOutputError) as e:
                 last_error = e
                 logger.warning(
                     f"[process] | Attempt {attempt}/{len(strategies)} FAILED | "
@@ -337,19 +259,6 @@ class GLMOCRService:
                 detail=(
                     f"OCR timed out after {elapsed}s. "
                     f"Try a smaller image or 'Free OCR.' prompt."
-                ),
-            )
-
-        if isinstance(error, TokenLoopError):
-            logger.warning(
-                f"[process] TOKEN LOOP | File: {filename} | "
-                f"Elapsed: {elapsed}s | {error}"
-            )
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"OCR detected repetitive output after {elapsed}s. "
-                    f"Try 'Free OCR.' prompt for this image."
                 ),
             )
 

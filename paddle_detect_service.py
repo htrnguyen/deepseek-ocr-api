@@ -7,9 +7,9 @@ from fastapi import HTTPException
 
 from config import settings
 from logger import logger
+from paddleocr import TextDetection
 from utils.image_processor import ImageProcessor
 
-# Disable PaddleX model source connectivity check to avoid network delays
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 
@@ -31,11 +31,8 @@ class PaddleDetectService:
             return
 
         with self._lock:
-            # Double-check after acquiring lock
             if self._model is not None:
                 return
-
-            from paddleocr import TextDetection
 
             logger.info(
                 f"[paddle_detect] | Lazy-loading TextDetection model: {self._model_name}"
@@ -50,7 +47,6 @@ class PaddleDetectService:
     ) -> dict:
         """Detect text regions in an image. Returns boxes in original-image coordinates."""
 
-        # Ensure model is loaded (blocking, but only once)
         if self._model is None:
             await asyncio.to_thread(self._load_model)
 
@@ -58,7 +54,6 @@ class PaddleDetectService:
         tmp_path = None
 
         try:
-            # --- Step 1: Preprocess image ---
             try:
                 tmp_path, original_size, scale = await asyncio.to_thread(
                     ImageProcessor.preprocess_image, file_content
@@ -74,14 +69,12 @@ class PaddleDetectService:
                 f"Original: {original_size[0]}x{original_size[1]} | Scale: {scale:.3f}"
             )
 
-            # --- Step 2: Run detection ---
             det_start = time.time()
             results = await asyncio.to_thread(
                 self._model.predict, tmp_path, batch_size=1
             )
             det_time = round(time.time() - det_start, 3)
 
-            # --- Step 3: Parse results → remap to original coords ---
             all_boxes = []
             for res in results:
                 polys = res.get("dt_polys", [])
@@ -90,13 +83,11 @@ class PaddleDetectService:
                 for i, poly in enumerate(polys):
                     score = scores[i] if i < len(scores) else 0.0
 
-                    # Remap resized coords → original image coords
                     if scale < 1.0:
                         poly_orig = [[int(x / scale), int(y / scale)] for x, y in poly]
                     else:
                         poly_orig = [[int(x), int(y)] for x, y in poly]
 
-                    # Also compute axis-aligned bounding rect for convenience
                     xs = [p[0] for p in poly_orig]
                     ys = [p[1] for p in poly_orig]
                     bbox = [min(xs), min(ys), max(xs), max(ys)]
