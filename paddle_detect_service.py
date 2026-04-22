@@ -1,12 +1,16 @@
 import time
 import os
 import asyncio
+import threading
 
 from fastapi import HTTPException
 
 from config import settings
 from logger import logger
 from utils.image_processor import ImageProcessor
+
+# Disable PaddleX model source connectivity check to avoid network delays
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 
 class PaddleDetectService:
@@ -19,18 +23,24 @@ class PaddleDetectService:
     def __init__(self, model_name: str = "PP-OCRv5_server_det"):
         self._model = None
         self._model_name = model_name
+        self._lock = threading.Lock()
 
     def _load_model(self):
-        """Lazy-load the TextDetection model on first request."""
+        """Lazy-load the TextDetection model on first request (thread-safe)."""
         if self._model is not None:
             return
 
-        from paddleocr import TextDetection
+        with self._lock:
+            # Double-check after acquiring lock
+            if self._model is not None:
+                return
 
-        logger.info(
-            f"[paddle_detect] | Lazy-loading TextDetection model: {self._model_name}"
-        )
-        self._model = TextDetection(model_name=self._model_name)
+            from paddleocr import TextDetection
+
+            logger.info(
+                f"[paddle_detect] | Lazy-loading TextDetection model: {self._model_name}"
+            )
+            self._model = TextDetection(model_name=self._model_name)
         logger.info("[paddle_detect] | TextDetection model loaded successfully")
 
     async def detect(
