@@ -35,9 +35,7 @@ class Settings(BaseSettings):
     PROMPT_GENERAL_OCR: str = "Please perform OCR on this image."
     DEFAULT_PROMPT: str = PROMPT_MARKDOWN
 
-    DOC_LAYOUT_MODEL_PATH: str = (
-        "DocLayout-YOLO-DocStructBench/doclayout_yolo_docstructbench_imgsz1024.pt"
-    )
+    DOC_LAYOUT_MODEL_PATH: str = "models/doclayout_yolo_docstructbench_imgsz1024.pt"
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
