@@ -1,6 +1,6 @@
 import tempfile
 from io import BytesIO
-from PIL import Image, ImageOps, ImageFilter
+from PIL import Image, ImageOps, ImageFilter, UnidentifiedImageError
 from logger import logger
 
 
@@ -22,7 +22,12 @@ class ImageProcessor:
         """Image preprocessing (Validate, Resize, Convert, Save). Returns tmp_path, original_size, scale."""
         target = max_size or cls.MAX_IMAGE_SIZE
 
-        with Image.open(BytesIO(file_content)) as img:
+        try:
+            img_opened = Image.open(BytesIO(file_content))
+        except UnidentifiedImageError:
+            raise ValueError("File content is not a valid or supported image format.")
+
+        with img_opened as img:
             img = ImageOps.exif_transpose(img)
 
             original_size = img.size
