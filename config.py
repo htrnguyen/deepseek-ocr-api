@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     RATE_LIMIT: str = "60/minute"
 
     OLLAMA_MODEL: str = "glm-ocr"
+    OLLAMA_TRANSLATE_MODEL: str = "translategemma:latest"
     OLLAMA_TIMEOUT: int = 120
     OLLAMA_NUM_CTX: int = 8192
     OLLAMA_NUM_PREDICT: int = 2048

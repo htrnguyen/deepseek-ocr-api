@@ -12,11 +12,20 @@ from doclayout_service import DocLayoutService
 from paddle_detect_service import PaddleDetectService
 from logger import logger
 import ollama as ollama_client
+from pydantic import BaseModel
+from translate_service import TranslateService
 
 
 doclayout_service = DocLayoutService()
 paddle_detect_service = PaddleDetectService()
 ocr_service = GLMOCRService()
+translate_service = TranslateService()
+
+
+class TranslateRequest(BaseModel):
+    text: str
+    target_language: str
+    source_language: str = "auto"
 
 
 async def validate_image_upload(file: UploadFile = File(...)) -> UploadFile:
@@ -36,7 +45,9 @@ async def validate_image_upload(file: UploadFile = File(...)) -> UploadFile:
 
 
 async def _ollama_keepalive_loop():
-    """Ping Ollama every N seconds to verify model is still loaded."""
+    """Ping Ollama every N seconds to verify models are still loaded."""
+
+    models_to_check = [settings.OLLAMA_MODEL, settings.OLLAMA_TRANSLATE_MODEL]
 
     while True:
         try:
@@ -46,23 +57,24 @@ async def _ollama_keepalive_loop():
             running = [m.model for m in getattr(ps_response, "models", [])]
             elapsed = round(time.time() - start, 1)
 
-            if any(settings.OLLAMA_MODEL in name for name in running):
-                logger.info(
-                    f"[keepalive] | Ollama OK | Model loaded | Time: {elapsed}s"
-                )
-            else:
-                logger.warning("[keepalive] | Model not loaded | Reloading...")
-                await asyncio.wait_for(
-                    asyncio.to_thread(
-                        ollama_client.generate,
-                        model=settings.OLLAMA_MODEL,
-                        prompt="",
-                        keep_alive=-1,
-                        options={"num_ctx": settings.OLLAMA_NUM_CTX},
-                    ),
-                    timeout=180,
-                )
-                logger.info("[keepalive] | Model reloaded successfully")
+            for model_name in models_to_check:
+                if any(model_name in name for name in running):
+                    logger.info(
+                        f"[keepalive] | Ollama OK | Model {model_name} loaded | Time: {elapsed}s"
+                    )
+                else:
+                    logger.warning(f"[keepalive] | Model {model_name} not loaded | Reloading...")
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            ollama_client.generate,
+                            model=model_name,
+                            prompt="",
+                            keep_alive=-1,
+                            options={"num_ctx": settings.OLLAMA_NUM_CTX},
+                        ),
+                        timeout=180,
+                    )
+                    logger.info(f"[keepalive] | Model {model_name} reloaded successfully")
         except asyncio.CancelledError:
             logger.info("[keepalive] | Task cancelled")
             break
@@ -74,8 +86,9 @@ async def _ollama_keepalive_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: verify model + start keepalive. Shutdown: cancel keepalive."""
+    """Startup: verify models + start keepalive. Shutdown: cancel keepalive."""
 
+    models_to_check = [settings.OLLAMA_MODEL, settings.OLLAMA_TRANSLATE_MODEL]
     logger.info("[lifespan] | Checking Ollama status...")
     try:
         ps_response = await asyncio.wait_for(
@@ -83,26 +96,28 @@ async def lifespan(app: FastAPI):
             timeout=10,
         )
         running = [m.model for m in getattr(ps_response, "models", [])]
-        if any(settings.OLLAMA_MODEL in name for name in running):
-            logger.info(
-                f"[lifespan] | Ollama ready | Model '{settings.OLLAMA_MODEL}' loaded in GPU"
-            )
-        else:
-            logger.warning(
-                f"[lifespan] | Model '{settings.OLLAMA_MODEL}' not in memory | "
-                f"Loading... (this may take 1-2 min on first run)"
-            )
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    ollama_client.generate,
-                    model=settings.OLLAMA_MODEL,
-                    prompt="",
-                    keep_alive=-1,
-                    options={"num_ctx": settings.OLLAMA_NUM_CTX},
-                ),
-                timeout=180,
-            )
-            logger.info("[lifespan] | Model loaded successfully")
+        
+        for model_name in models_to_check:
+            if any(model_name in name for name in running):
+                logger.info(
+                    f"[lifespan] | Ollama ready | Model '{model_name}' loaded in GPU"
+                )
+            else:
+                logger.warning(
+                    f"[lifespan] | Model '{model_name}' not in memory | "
+                    f"Loading... (this may take 1-2 min on first run)"
+                )
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ollama_client.generate,
+                        model=model_name,
+                        prompt="",
+                        keep_alive=-1,
+                        options={"num_ctx": settings.OLLAMA_NUM_CTX},
+                    ),
+                    timeout=180,
+                )
+                logger.info(f"[lifespan] | Model {model_name} loaded successfully")
     except asyncio.TimeoutError:
         logger.warning("[lifespan] | Ollama check timed out | App will start anyway")
     except Exception as e:
@@ -183,18 +198,42 @@ async def paddle_detect(
     return {"success": True, "filename": file.filename, **result, "status": "success"}
 
 
+@app.post("/doclayout")
+@limiter.limit(settings.RATE_LIMIT)
+async def doclayout_detect(
+    request: Request, file: UploadFile = Depends(validate_image_upload)
+):
+    """Alias for paddle-ocr focusing on doclayout capability."""
+    result = await doclayout_service.detect_figures(file.file_content, file.filename)
+
+    return {"success": True, "filename": file.filename, **result, "status": "success"}
+
+
+@app.post("/translate")
+@limiter.limit(settings.RATE_LIMIT)
+async def translate_text(request: Request, data: TranslateRequest):
+    """Translate text using Ollama translategemma."""
+    result = await translate_service.translate(
+        text=data.text,
+        source_language=data.source_language,
+        target_language=data.target_language
+    )
+    return {"success": True, **result, "status": "success"}
+
+
 @app.get("/health")
 async def health():
     """Health check with Ollama model status."""
-    ollama_status = "unknown"
+    ollama_status = {}
     try:
-
         ps_response = await asyncio.to_thread(ollama_client.ps)
         running_models = [m.model for m in getattr(ps_response, "models", [])]
-        if any(settings.OLLAMA_MODEL in name for name in running_models):
-            ollama_status = "model_loaded"
-        else:
-            ollama_status = "model_not_loaded"
+        
+        for model_name in [settings.OLLAMA_MODEL, settings.OLLAMA_TRANSLATE_MODEL]:
+            if any(model_name in name for name in running_models):
+                ollama_status[model_name] = "loaded"
+            else:
+                ollama_status[model_name] = "not_loaded"
     except Exception as e:
         ollama_status = f"error: {type(e).__name__}"
 
@@ -203,6 +242,7 @@ async def health():
         "glm_ocr": "enabled",
         "doclayout_yolo": "enabled",
         "paddle_detect": "enabled",
+        "translate": "enabled",
         "ollama_status": ollama_status,
         "version": settings.API_VERSION,
     }
