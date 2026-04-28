@@ -15,6 +15,7 @@ class DocLayoutService:
     def __init__(self):
         self.model = None
         self._lock = threading.Lock()
+        self._async_lock = None
 
     def _load_model(self):
         if self.model is not None:
@@ -31,6 +32,9 @@ class DocLayoutService:
             )
 
     async def detect_figures(self, file_content: bytes, filename: str):
+        if self._async_lock is None:
+            self._async_lock = asyncio.Lock()
+
         if self.model is None:
             await asyncio.to_thread(self._load_model)
 
@@ -50,9 +54,10 @@ class DocLayoutService:
 
             logger.info(f"[detect_figures] | DocLayout-YOLO started | File: {filename}")
 
-            results = await asyncio.to_thread(
-                self.model.predict, tmp_path, imgsz=1024, conf=0.25, verbose=False
-            )
+            async with self._async_lock:
+                results = await asyncio.to_thread(
+                    self.model.predict, tmp_path, imgsz=1024, conf=0.25, verbose=False
+                )
             image_regions = []
 
             if len(results) > 0:
