@@ -24,6 +24,7 @@ class PaddleDetectService:
         self._model = None
         self._model_name = model_name
         self._lock = threading.Lock()
+        self._async_lock = None
 
     def _load_model(self):
         """Lazy-load the TextDetection model on first request (thread-safe)."""
@@ -46,6 +47,9 @@ class PaddleDetectService:
         filename: str,
     ) -> dict:
         """Detect text regions in an image. Returns boxes in original-image coordinates."""
+
+        if self._async_lock is None:
+            self._async_lock = asyncio.Lock()
 
         if self._model is None:
             await asyncio.to_thread(self._load_model)
@@ -70,9 +74,10 @@ class PaddleDetectService:
             )
 
             det_start = time.time()
-            results = await asyncio.to_thread(
-                self._model.predict, tmp_path, batch_size=1
-            )
+            async with self._async_lock:
+                results = await asyncio.to_thread(
+                    self._model.predict, tmp_path, batch_size=1
+                )
             det_time = round(time.time() - det_start, 3)
 
             all_boxes = []
