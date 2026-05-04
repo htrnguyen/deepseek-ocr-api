@@ -14,12 +14,14 @@ from logger import logger
 import ollama as ollama_client
 from pydantic import BaseModel
 from translate_service import TranslateService
+from chandra_service import ChandraService
 
 
 doclayout_service = DocLayoutService()
 paddle_detect_service = PaddleDetectService()
 ocr_service = GLMOCRService()
 translate_service = TranslateService()
+chandra_service = ChandraService()
 
 
 class TranslateRequest(BaseModel):
@@ -63,7 +65,9 @@ async def _ollama_keepalive_loop():
                         f"[keepalive] | Ollama OK | Model {model_name} loaded | Time: {elapsed}s"
                     )
                 else:
-                    logger.warning(f"[keepalive] | Model {model_name} not loaded | Reloading...")
+                    logger.warning(
+                        f"[keepalive] | Model {model_name} not loaded | Reloading..."
+                    )
                     await asyncio.wait_for(
                         asyncio.to_thread(
                             ollama_client.generate,
@@ -74,7 +78,9 @@ async def _ollama_keepalive_loop():
                         ),
                         timeout=180,
                     )
-                    logger.info(f"[keepalive] | Model {model_name} reloaded successfully")
+                    logger.info(
+                        f"[keepalive] | Model {model_name} reloaded successfully"
+                    )
         except asyncio.CancelledError:
             logger.info("[keepalive] | Task cancelled")
             break
@@ -96,7 +102,7 @@ async def lifespan(app: FastAPI):
             timeout=10,
         )
         running = [m.model for m in getattr(ps_response, "models", [])]
-        
+
         for model_name in models_to_check:
             if any(model_name in name for name in running):
                 logger.info(
@@ -216,9 +222,26 @@ async def translate_text(request: Request, data: TranslateRequest):
     result = await translate_service.translate(
         text=data.text,
         source_language=data.source_language,
-        target_language=data.target_language
+        target_language=data.target_language,
     )
     return {"success": True, **result, "status": "success"}
+
+
+@app.post("/chandra-ocr")
+@limiter.limit(settings.RATE_LIMIT)
+async def chandra_ocr(
+    request: Request, file: UploadFile = Depends(validate_image_upload)
+):
+    """Run Chandra OCR Layout Detection."""
+    result = await chandra_service.process(file.file_content, file.filename)
+    return {"success": True, "filename": file.filename, **result, "status": "success"}
+
+
+@app.post("/chandra-unload")
+async def chandra_unload():
+    """Unload Chandra model to free Unified Memory for Ollama."""
+    chandra_service.unload()
+    return {"success": True, "status": "success", "message": "Chandra model unloaded."}
 
 
 @app.get("/health")
@@ -228,7 +251,7 @@ async def health():
     try:
         ps_response = await asyncio.to_thread(ollama_client.ps)
         running_models = [m.model for m in getattr(ps_response, "models", [])]
-        
+
         for model_name in [settings.OLLAMA_MODEL, settings.OLLAMA_TRANSLATE_MODEL]:
             if any(model_name in name for name in running_models):
                 ollama_status[model_name] = "loaded"
@@ -240,6 +263,7 @@ async def health():
     return {
         "status": "ok",
         "glm_ocr": "enabled",
+        "chandra_ocr": "enabled",
         "doclayout_yolo": "enabled",
         "paddle_detect": "enabled",
         "translate": "enabled",
