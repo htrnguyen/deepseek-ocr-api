@@ -62,11 +62,11 @@ async def _ollama_keepalive_loop():
             for model_name in models_to_check:
                 if any(model_name in name for name in running):
                     logger.info(
-                        f"[keepalive] | Ollama OK | Model {model_name} loaded | Time: {elapsed}s"
+                        f"[_ollama_keepalive_loop] Ollama OK | Model {model_name} loaded | Time: {elapsed}s"
                     )
                 else:
                     logger.warning(
-                        f"[keepalive] | Model {model_name} not loaded | Reloading..."
+                        f"[_ollama_keepalive_loop] Model {model_name} not loaded | Reloading..."
                     )
                     await asyncio.wait_for(
                         asyncio.to_thread(
@@ -79,14 +79,14 @@ async def _ollama_keepalive_loop():
                         timeout=180,
                     )
                     logger.info(
-                        f"[keepalive] | Model {model_name} reloaded successfully"
+                        f"[_ollama_keepalive_loop] Model {model_name} reloaded successfully"
                     )
         except asyncio.CancelledError:
-            logger.info("[keepalive] | Task cancelled")
+            logger.info("[_ollama_keepalive_loop] Task cancelled")
             break
         except Exception as e:
             logger.error(
-                f"[keepalive] | Ollama FAILED | Error: {type(e).__name__}: {e}"
+                f"[_ollama_keepalive_loop] Ollama FAILED | Error: {type(e).__name__}: {e}"
             )
 
 
@@ -95,7 +95,7 @@ async def lifespan(app: FastAPI):
     """Startup: verify models + start keepalive. Shutdown: cancel keepalive."""
 
     models_to_check = [settings.OLLAMA_MODEL, settings.OLLAMA_TRANSLATE_MODEL]
-    logger.info("[lifespan] | Checking Ollama status...")
+    logger.info("[lifespan] Checking Ollama status...")
     try:
         ps_response = await asyncio.wait_for(
             asyncio.to_thread(ollama_client.ps),
@@ -106,11 +106,11 @@ async def lifespan(app: FastAPI):
         for model_name in models_to_check:
             if any(model_name in name for name in running):
                 logger.info(
-                    f"[lifespan] | Ollama ready | Model '{model_name}' loaded in GPU"
+                    f"[lifespan] Ollama ready | Model '{model_name}' loaded in GPU"
                 )
             else:
                 logger.warning(
-                    f"[lifespan] | Model '{model_name}' not in memory | "
+                    f"[lifespan] Model '{model_name}' not in memory | "
                     f"Loading... (this may take 1-2 min on first run)"
                 )
                 await asyncio.wait_for(
@@ -123,19 +123,25 @@ async def lifespan(app: FastAPI):
                     ),
                     timeout=180,
                 )
-                logger.info(f"[lifespan] | Model {model_name} loaded successfully")
+                logger.info(f"[lifespan] Model {model_name} loaded successfully")
     except asyncio.TimeoutError:
-        logger.warning("[lifespan] | Ollama check timed out | App will start anyway")
+        logger.warning("[lifespan] Ollama check timed out | App will start anyway")
     except Exception as e:
         logger.warning(
-            f"[lifespan] | Ollama check failed (non-fatal) | Error: {type(e).__name__}: {e}"
+            f"[lifespan] Ollama check failed (non-fatal) | Error: {type(e).__name__}: {e}"
         )
 
     keepalive_task = asyncio.create_task(_ollama_keepalive_loop())
     logger.info(
-        f"[lifespan] | Keepalive started | "
+        f"[lifespan] Keepalive started | "
         f"Interval: {settings.OLLAMA_KEEPALIVE_INTERVAL}s"
     )
+
+    logger.info("[lifespan] Preloading Chandra model for maximum performance...")
+    try:
+        await asyncio.to_thread(chandra_service.load)
+    except Exception as e:
+        logger.error(f"[lifespan] Failed to preload Chandra model: {e}")
 
     yield
 
@@ -144,10 +150,15 @@ async def lifespan(app: FastAPI):
         await keepalive_task
     except asyncio.CancelledError:
         pass
-    logger.info("[lifespan] | Shutdown complete")
+    logger.info("[lifespan] Shutdown complete")
 
 
-app = FastAPI(title=settings.API_TITLE, version=settings.API_VERSION, lifespan=lifespan)
+app = FastAPI(
+    title=settings.API_TITLE,
+    version=settings.API_VERSION,
+    description="Unified AI Service Aggregator optimized for Apple Silicon (Mac M-Series). Integrates GLM, Chandra, YOLO, and Gemma models for OCR, layout detection, and translation.",
+    lifespan=lifespan,
+)
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
@@ -168,7 +179,12 @@ async def value_error_handler(request: Request, exc: ValueError):
     )
 
 
-@app.post("/ocr")
+@app.post(
+    "/ocr",
+    tags=["1. OCR & Extraction"],
+    summary="GLM OCR (Ollama)",
+    description="Perform text extraction on an image using the GLM-OCR model via Ollama. It is optimized to output clean Markdown while preserving document structure.",
+)
 @limiter.limit(settings.RATE_LIMIT)
 async def glm_ocr(
     request: Request,
@@ -184,17 +200,12 @@ async def glm_ocr(
     return {"success": True, "filename": file.filename, **result, "status": "success"}
 
 
-@app.post("/paddle-ocr")
-@limiter.limit(settings.RATE_LIMIT)
-async def paddle_ocr(
-    request: Request, file: UploadFile = Depends(validate_image_upload)
-):
-    result = await doclayout_service.detect_figures(file.file_content, file.filename)
-
-    return {"success": True, "filename": file.filename, **result, "status": "success"}
-
-
-@app.post("/paddle-detect")
+@app.post(
+    "/paddle-detect",
+    tags=["2. Layout & Vision"],
+    summary="Paddle Detect",
+    description="Lightweight bounding box and text detection using the PaddleOCR engine. Good for quick text coordinate extraction.",
+)
 @limiter.limit(settings.RATE_LIMIT)
 async def paddle_detect(
     request: Request, file: UploadFile = Depends(validate_image_upload)
@@ -204,21 +215,44 @@ async def paddle_detect(
     return {"success": True, "filename": file.filename, **result, "status": "success"}
 
 
-@app.post("/doclayout")
+@app.post(
+    "/doclayout",
+    tags=["2. Layout & Vision"],
+    summary="YOLO DocLayout",
+    description="Ultra-fast structural detection using a YOLO model. Extracts bounding boxes for figures, tables, headers, and text blocks. Does NOT extract text content.",
+)
 @limiter.limit(settings.RATE_LIMIT)
 async def doclayout_detect(
     request: Request, file: UploadFile = Depends(validate_image_upload)
 ):
-    """Alias for paddle-ocr focusing on doclayout capability."""
     result = await doclayout_service.detect_figures(file.file_content, file.filename)
 
     return {"success": True, "filename": file.filename, **result, "status": "success"}
 
 
-@app.post("/translate")
+@app.post(
+    "/paddle-ocr",
+    tags=["2. Layout & Vision"],
+    summary="Paddle OCR (Legacy Alias)",
+    description="Legacy alias for /doclayout. Performs YOLO structural detection.",
+)
+@limiter.limit(settings.RATE_LIMIT)
+async def paddle_ocr_legacy(
+    request: Request, file: UploadFile = Depends(validate_image_upload)
+):
+    result = await doclayout_service.detect_figures(file.file_content, file.filename)
+
+    return {"success": True, "filename": file.filename, **result, "status": "success"}
+
+
+@app.post(
+    "/translate",
+    tags=["3. NLP Services"],
+    summary="Translate (Gemma)",
+    description="Translate text using the translategemma model. Optimized to strictly preserve LaTeX math equations ($, $$) and complex Markdown formatting from OCR outputs.",
+)
 @limiter.limit(settings.RATE_LIMIT)
 async def translate_text(request: Request, data: TranslateRequest):
-    """Translate text using Ollama translategemma."""
     result = await translate_service.translate(
         text=data.text,
         source_language=data.source_language,
@@ -227,26 +261,27 @@ async def translate_text(request: Request, data: TranslateRequest):
     return {"success": True, **result, "status": "success"}
 
 
-@app.post("/chandra-ocr")
+@app.post(
+    "/chandra-ocr",
+    tags=["1. OCR & Extraction"],
+    summary="Chandra OCR (MPS)",
+    description="Advanced layout detection and high-fidelity Markdown parsing using the Chandra model. Lazily loaded and optimized to run on Mac's Unified Memory (MPS).",
+)
 @limiter.limit(settings.RATE_LIMIT)
 async def chandra_ocr(
     request: Request, file: UploadFile = Depends(validate_image_upload)
 ):
-    """Run Chandra OCR Layout Detection."""
     result = await chandra_service.process(file.file_content, file.filename)
     return {"success": True, "filename": file.filename, **result, "status": "success"}
 
 
-@app.post("/chandra-unload")
-async def chandra_unload():
-    """Unload Chandra model to free Unified Memory for Ollama."""
-    chandra_service.unload()
-    return {"success": True, "status": "success", "message": "Chandra model unloaded."}
-
-
-@app.get("/health")
+@app.get(
+    "/health",
+    tags=["4. System"],
+    summary="System Health & Status",
+    description="Returns the operational status of all registered AI modules and currently loaded Ollama models in VRAM.",
+)
 async def health():
-    """Health check with Ollama model status."""
     ollama_status = {}
     try:
         ps_response = await asyncio.to_thread(ollama_client.ps)

@@ -8,8 +8,8 @@ from typing import List
 class Settings(BaseSettings):
     """Application settings"""
 
-    API_TITLE: str = "GLM OCR API"
-    API_VERSION: str = "2.5"
+    API_TITLE: str = "MacOS AI Aggregator Service"
+    API_VERSION: str = "3.0"
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     CORS_ORIGINS: List[str] = ["*"]

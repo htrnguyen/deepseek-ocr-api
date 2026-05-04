@@ -35,11 +35,9 @@ class PaddleDetectService:
             if self._model is not None:
                 return
 
-            logger.info(
-                f"[paddle_detect] | Lazy-loading TextDetection model: {self._model_name}"
-            )
+            logger.info(f"[_load_model] Lazy-loading TextDetection model: {self._model_name}")
             self._model = TextDetection(model_name=self._model_name)
-        logger.info("[paddle_detect] | TextDetection model loaded successfully")
+        logger.info("[_load_model] TextDetection model loaded successfully")
 
     async def detect(
         self,
@@ -64,12 +62,12 @@ class PaddleDetectService:
                 )
             except ValueError as e:
                 logger.warning(
-                    f"[paddle_detect] | Image Rejected | File: {filename} | {e}"
+                    f"[detect] Image Rejected | File: {filename} | Error: {e}"
                 )
                 raise HTTPException(status_code=400, detail=str(e))
 
             logger.info(
-                f"[paddle_detect] | Image prepared | File: {filename} | "
+                f"[detect] Image prepared | File: {filename} | "
                 f"Original: {original_size[0]}x{original_size[1]} | Scale: {scale:.3f}"
             )
 
@@ -108,7 +106,7 @@ class PaddleDetectService:
             process_time = round(time.time() - start_time, 3)
 
             logger.info(
-                f"[paddle_detect] | Detection completed | File: {filename} | "
+                f"[detect] Detection completed | File: {filename} | "
                 f"Det time: {det_time}s | Total: {process_time}s | "
                 f"Found: {len(all_boxes)} text region(s)"
             )

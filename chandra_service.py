@@ -12,7 +12,6 @@ from chandra.settings import settings
 class ChandraService:
     def __init__(self):
         self.model = None
-        # Tối ưu hóa cho môi trường Mac (Apple Silicon)
         settings.TORCH_DEVICE = "mps"
         settings.TORCH_ATTN = "sdpa"
         settings.MAX_OUTPUT_TOKENS = 8192
@@ -20,20 +19,9 @@ class ChandraService:
     def load(self):
         """Lazy load model vào Unified Memory (MPS)"""
         if self.model is None:
-            logger.info(
-                "[ChandraService] 🚀 Đang khởi động model Chandra OCR lên MPS..."
-            )
+            logger.info("[load] Starting Chandra OCR model on MPS")
             self.model = load_model()
-            logger.info("[ChandraService] ✅ Model Chandra đã load thành công!")
-
-    def unload(self):
-        """Giải phóng RAM khi không dùng để nhường chỗ cho Ollama"""
-        if self.model is not None:
-            del self.model
-            self.model = None
-            if torch.backends.mps.is_available():
-                torch.mps.empty_cache()
-            logger.info("[ChandraService] 🛑 Đã giải phóng model Chandra khỏi memory.")
+            logger.info("[load] Chandra model loaded successfully")
 
     async def process(
         self, file_content: bytes, filename: str, prompt_type: str = "ocr_layout"
@@ -46,7 +34,7 @@ class ChandraService:
 
             batch = [BatchInputItem(image=image, prompt_type=prompt_type)]
 
-            logger.info(f"[ChandraService] Đang chạy inference cho {filename}...")
+            logger.info(f"[process] Running inference for file: {filename}")
             with torch.inference_mode():
                 results = generate_hf(batch=batch, model=self.model)
 
@@ -54,7 +42,6 @@ class ChandraService:
             markdown_text = parse_markdown(raw_html)
             layout_blocks = parse_layout(raw_html, image)
 
-            # Chuyển đổi Bbox về dạng JSON
             blocks_data = []
             for block in layout_blocks:
                 blocks_data.append(
@@ -72,5 +59,5 @@ class ChandraService:
             }
 
         except Exception as e:
-            logger.error(f"[ChandraService] Lỗi xử lý ảnh: {traceback.format_exc()}")
+            logger.error(f"[process] Image processing error: {traceback.format_exc()}")
             raise ValueError(f"Chandra OCR error: {str(e)}")

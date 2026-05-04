@@ -25,11 +25,9 @@ class DocLayoutService:
             if self.model is not None:
                 return
 
-            logger.info("[doclayout_service] | Lazy-loading DocLayout-YOLO model")
+            logger.info("[_load_model] Lazy-loading DocLayout-YOLO model")
             self.model = YOLOv10(settings.DOC_LAYOUT_MODEL_PATH)
-            logger.info(
-                "[doclayout_service] | DocLayout-YOLO model loaded successfully"
-            )
+            logger.info("[_load_model] DocLayout-YOLO model loaded successfully")
 
     async def detect_figures(self, file_content: bytes, filename: str):
         if self._async_lock is None:

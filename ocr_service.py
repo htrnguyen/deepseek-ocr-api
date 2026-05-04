@@ -53,14 +53,14 @@ class GLMOCRService:
                         first_token_time = time.time()
                         eval_time = round(first_token_time - stream_start, 1)
                         logger.info(
-                            f"[streaming] | First token | Time: {eval_time}s (prompt eval)"
+                            f"[_call_ollama_streaming] First token | Time: {eval_time}s (prompt eval)"
                         )
 
                 if len(tokens) > 0 and len(tokens) % 50 == 0:
                     elapsed = round(time.time() - stream_start, 1)
                     preview = "".join(tokens[-20:])[:80]
                     logger.info(
-                        f"[streaming] | Progress: {len(tokens)} tokens | "
+                        f"[_call_ollama_streaming] Progress: {len(tokens)} tokens | "
                         f"Time: {elapsed}s | Last: '{preview}'"
                     )
 
@@ -68,7 +68,7 @@ class GLMOCRService:
                     response_meta = chunk
 
         except Exception as e:
-            logger.error(f"[streaming] | Error: {type(e).__name__}: {e}")
+            logger.error(f"[_call_ollama_streaming] Error: {type(e).__name__}: {e}")
             if hasattr(stream, "close"):
                 stream.close()
             raise
@@ -78,7 +78,7 @@ class GLMOCRService:
 
         if eval_count >= settings.OLLAMA_NUM_PREDICT - 10:
             logger.warning(
-                f"[streaming] | Hit token limit ({eval_count} >= {settings.OLLAMA_NUM_PREDICT}) - Output might be truncated."
+                f"[_call_ollama_streaming] Hit token limit ({eval_count} >= {settings.OLLAMA_NUM_PREDICT}) - Output might be truncated."
             )
 
         return {
@@ -107,14 +107,14 @@ class GLMOCRService:
         }
 
         logger.info(
-            f"[process] | Ollama Config | File: {filename} | Model: {self.model} | "
+            f"[_process_single] Ollama Config | File: {filename} | Model: {self.model} | "
             f"Prompt: '{prompt}' | Timeout: {settings.OLLAMA_TIMEOUT}s | "
             f"Repeat Penalty: {ollama_options['repeat_penalty']}"
         )
 
         ollama_start = time.time()
         logger.info(
-            f"[process] | [Step 3/3] Sending streaming request to Ollama | File: {filename}"
+            f"[_process_single] [Step 3/3] Sending streaming request to Ollama | File: {filename}"
         )
 
         result = await asyncio.wait_for(
@@ -139,7 +139,7 @@ class GLMOCRService:
         token_speed = round(response_tokens / ollama_time, 1) if ollama_time > 0 else 0
 
         logger.info(
-            f"[process] | Pipeline Completed | File: {filename} | Total Time: {total_time}s | "
+            f"[_process_single] Pipeline Completed | File: {filename} | Total Time: {total_time}s | "
             f"Ollama Time: {ollama_time}s | "
             f"Tokens: {prompt_tokens}p + {response_tokens}r = {total_tokens} | "
             f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars | "
@@ -149,7 +149,7 @@ class GLMOCRService:
 
         if not result_text or (len(result_text) < 20 and response_tokens < 50):
             logger.warning(
-                f"[process] | EmptyOutput | File: {filename} | {len(result_text)} chars | "
+                f"[_process_single] EmptyOutput | File: {filename} | {len(result_text)} chars | "
                 f"{response_tokens} tokens | Likely hallucination"
             )
             raise EmptyOutputError(
@@ -178,7 +178,7 @@ class GLMOCRService:
         start_time = time.time()
         last_error = None
 
-        logger.info(f"[process] | [Step 1/3] Pipeline Started | File: {filename}")
+        logger.info(f"[process] [Step 1/3] Pipeline Started | File: {filename}")
 
         strategies = [
             {"max_size": size, "prompt": prompt} for size in ImageProcessor.RETRY_SIZES
@@ -199,13 +199,13 @@ class GLMOCRService:
                     )
                 except ValueError as e:
                     logger.warning(
-                        f"[process] | Image Rejected | File: {filename} | {e}"
+                        f"[process] Image Rejected | File: {filename} | {e}"
                     )
                     raise HTTPException(status_code=400, detail=str(e))
 
                 saved_size = os.path.getsize(tmp_path) / 1024
                 logger.info(
-                    f"[process] | [Step 2/3] Image Prepared | File: {filename} | "
+                    f"[process] [Step 2/3] Image Prepared | File: {filename} | "
                     f"Original: {original_size[0]}x{original_size[1]} | "
                     f"Target: {max_size}px | Saved: {saved_size:.1f} KB"
                 )
@@ -230,7 +230,7 @@ class GLMOCRService:
             except (asyncio.TimeoutError, EmptyOutputError) as e:
                 last_error = e
                 logger.warning(
-                    f"[process] | Attempt {attempt}/{len(strategies)} FAILED | "
+                    f"[process] Attempt {attempt}/{len(strategies)} FAILED | "
                     f"File: {filename} | Target: {max_size}px | Prompt: '{current_prompt}' | "
                     f"Error: {type(e).__name__}"
                 )
@@ -251,7 +251,7 @@ class GLMOCRService:
 
         if isinstance(error, asyncio.TimeoutError):
             logger.error(
-                f"[process] TIMEOUT | File: {filename} | "
+                f"[_raise_http_error] TIMEOUT | File: {filename} | "
                 f"Elapsed: {elapsed}s | Limit: {settings.OLLAMA_TIMEOUT}s"
             )
             raise HTTPException(
@@ -264,7 +264,7 @@ class GLMOCRService:
 
         if isinstance(error, EmptyOutputError):
             logger.warning(
-                f"[process] EMPTY OUTPUT | File: {filename} | "
+                f"[_raise_http_error] EMPTY OUTPUT | File: {filename} | "
                 f"Elapsed: {elapsed}s | {error}"
             )
             raise HTTPException(
@@ -279,7 +279,7 @@ class GLMOCRService:
             raise error
 
         logger.error(
-            f"[process] ERROR | File: {filename} | "
+            f"[_raise_http_error] ERROR | File: {filename} | "
             f"Elapsed: {elapsed}s | {type(error).__name__}: {error}"
         )
         raise HTTPException(
