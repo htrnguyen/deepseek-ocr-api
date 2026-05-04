@@ -61,13 +61,9 @@ async def _ollama_keepalive_loop():
 
             for model_name in models_to_check:
                 if any(model_name in name for name in running):
-                    logger.info(
-                        f"[_ollama_keepalive_loop] Ollama OK | Model {model_name} loaded | Time: {elapsed}s"
-                    )
+                    logger.info(f"[Keepalive] OK  model={model_name}  ping={elapsed}s")
                 else:
-                    logger.warning(
-                        f"[_ollama_keepalive_loop] Model {model_name} not loaded | Reloading..."
-                    )
+                    logger.warning(f"[Keepalive] Model evicted, reloading: {model_name}")
                     await asyncio.wait_for(
                         asyncio.to_thread(
                             ollama_client.generate,
@@ -78,16 +74,12 @@ async def _ollama_keepalive_loop():
                         ),
                         timeout=180,
                     )
-                    logger.info(
-                        f"[_ollama_keepalive_loop] Model {model_name} reloaded successfully"
-                    )
+                    logger.info(f"[Keepalive] Reloaded: {model_name}")
         except asyncio.CancelledError:
-            logger.info("[_ollama_keepalive_loop] Task cancelled")
+            logger.info("[Keepalive] Task stopped")
             break
         except Exception as e:
-            logger.error(
-                f"[_ollama_keepalive_loop] Ollama FAILED | Error: {type(e).__name__}: {e}"
-            )
+            logger.error(f"[Keepalive] Error: {type(e).__name__}: {e}")
 
 
 @asynccontextmanager
@@ -95,7 +87,7 @@ async def lifespan(app: FastAPI):
     """Startup: verify models + start keepalive. Shutdown: cancel keepalive."""
 
     models_to_check = [settings.OLLAMA_MODEL, settings.OLLAMA_TRANSLATE_MODEL]
-    logger.info("[lifespan] Checking Ollama status...")
+    logger.info("[Startup] Checking Ollama...")
     try:
         ps_response = await asyncio.wait_for(
             asyncio.to_thread(ollama_client.ps),
@@ -105,14 +97,9 @@ async def lifespan(app: FastAPI):
 
         for model_name in models_to_check:
             if any(model_name in name for name in running):
-                logger.info(
-                    f"[lifespan] Ollama ready | Model '{model_name}' loaded in GPU"
-                )
+                logger.info(f"[Startup] Ollama model loaded: {model_name}")
             else:
-                logger.warning(
-                    f"[lifespan] Model '{model_name}' not in memory | "
-                    f"Loading... (this may take 1-2 min on first run)"
-                )
+                logger.warning(f"[Startup] Loading Ollama model: {model_name} (may take 1-2 min)")
                 await asyncio.wait_for(
                     asyncio.to_thread(
                         ollama_client.generate,
@@ -123,26 +110,22 @@ async def lifespan(app: FastAPI):
                     ),
                     timeout=180,
                 )
-                logger.info(f"[lifespan] Model {model_name} loaded successfully")
+                logger.info(f"[Startup] Ollama model ready: {model_name}")
     except asyncio.TimeoutError:
-        logger.warning("[lifespan] Ollama check timed out | App will start anyway")
+        logger.warning("[Startup] Ollama timed out — will retry on first request")
     except Exception as e:
-        logger.warning(
-            f"[lifespan] Ollama check failed (non-fatal) | Error: {type(e).__name__}: {e}"
-        )
+        logger.warning(f"[Startup] Ollama unavailable (non-fatal): {type(e).__name__}: {e}")
 
     keepalive_task = asyncio.create_task(_ollama_keepalive_loop())
-    logger.info(
-        f"[lifespan] Keepalive started | "
-        f"Interval: {settings.OLLAMA_KEEPALIVE_INTERVAL}s"
-    )
+    logger.info(f"[Startup] Keepalive task started  interval={settings.OLLAMA_KEEPALIVE_INTERVAL}s")
 
-    logger.info("[lifespan] Preloading Chandra model for maximum performance...")
+    logger.info("[Startup] Preloading Chandra model...")
     try:
         await asyncio.to_thread(chandra_service.load)
     except Exception as e:
-        logger.error(f"[lifespan] Failed to preload Chandra model: {e}")
+        logger.error(f"[Startup] Chandra preload failed: {e}")
 
+    logger.info("[Startup] All services ready. API is online.")
     yield
 
     keepalive_task.cancel()
@@ -150,7 +133,7 @@ async def lifespan(app: FastAPI):
         await keepalive_task
     except asyncio.CancelledError:
         pass
-    logger.info("[lifespan] Shutdown complete")
+    logger.info("[Shutdown] Complete")
 
 
 app = FastAPI(
@@ -308,8 +291,21 @@ async def health():
 
 
 if __name__ == "__main__":
+    import asyncio
+    import concurrent.futures
     import uvicorn
 
+    loop = asyncio.new_event_loop()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=16)
+    loop.set_default_executor(executor)
+    asyncio.set_event_loop(loop)
+
     uvicorn.run(
-        "main:app", host=settings.HOST, port=settings.PORT, workers=1, log_level="info"
+        "main:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        workers=1,
+        log_level="warning",
+        access_log=False,
+        loop="asyncio",
     )

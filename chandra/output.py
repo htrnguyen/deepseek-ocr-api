@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, asdict
 from functools import lru_cache
@@ -9,6 +10,8 @@ from bs4 import BeautifulSoup
 from markdownify import MarkdownConverter, re_whitespace
 
 from chandra.settings import settings
+
+_log = logging.getLogger("ocr-api")
 
 
 @lru_cache
@@ -184,7 +187,7 @@ def parse_markdown(
     try:
         markdown = md_cls.convert(html)
     except Exception as e:
-        print(f"Error converting HTML to Markdown: {e}")
+        _log.error(f"[Chandra] HTML->Markdown conversion failed: {e}")
         markdown = ""
     return markdown.strip()
 
@@ -215,7 +218,7 @@ def parse_layout(html: str, image: Image.Image, bbox_scale=settings.BBOX_SCALE):
             bbox = list(map(int, bbox))
             assert len(bbox) == 4, "Invalid bbox length"
         except Exception:
-            print(f"Invalid bbox format: {bbox}, defaulting to full image")
+            _log.warning(f"[Chandra] Invalid bbox format: {bbox}, defaulting to full image")
             bbox = [0, 0, 1, 1]
 
         # Normalize bbox

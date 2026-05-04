@@ -33,9 +33,7 @@ class ImageProcessor:
             original_size = img.size
             width, height = img.size
             logger.info(
-                f"[preprocess] | Image: {width}x{height} | "
-                f"Mode: {img.mode} | Size: {len(file_content) / 1024:.1f} KB | "
-                f"Target: {target}px"
+                f"[Image] Preprocess  {width}x{height}  mode={img.mode}  size={len(file_content)/1024:.0f}KB  target={target}px"
             )
 
             if not skip_validation:
@@ -59,8 +57,7 @@ class ImageProcessor:
             if max(img.size) > target:
                 scale = target / max(img.size)
                 logger.info(
-                    f"[preprocess] | Resizing | "
-                    f"From: {img.size} | Target Max Side: {target}px | Scale: {scale:.3f}"
+                    f"[Image] Resize  {img.size[0]}x{img.size[1]} -> max={target}px  scale={scale:.3f}"
                 )
 
                 if max(img.size) > target * 2:

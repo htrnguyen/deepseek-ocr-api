@@ -9,27 +9,37 @@ from logger import logger
 class TranslateService:
     """Service for translating text using translategemma model via Ollama."""
 
+    _CONCURRENCY = getattr(settings, "OLLAMA_TRANSLATE_CONCURRENCY", 4)
+
     def __init__(self):
         self.model = settings.OLLAMA_TRANSLATE_MODEL
-        self.semaphore = asyncio.Semaphore(
-            getattr(settings, "OLLAMA_TRANSLATE_CONCURRENCY", 4)
-        )
+        self._semaphore: asyncio.Semaphore | None = None
+
+    @property
+    def semaphore(self) -> asyncio.Semaphore:
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self._CONCURRENCY)
+        return self._semaphore
 
     async def translate(
         self, text: str, source_language: str, target_language: str
     ) -> dict:
         """Translate text to the target language."""
         start_time = time.time()
-        logger.info(f"[translate] Starting translation to {target_language}")
+        char_count = len(text)
+        logger.info(
+            f"[Translate] START  lang={source_language}->{target_language}  input={char_count} chars"
+        )
 
         instruction = (
             "IMPORTANT: Strictly preserve all Markdown formatting, structural layout, "
             "and LaTeX math equations (like $...$ or $$...$$) exactly as they appear in the original text."
         )
 
-        prompt = f"Translate the following text from {source_language} to {target_language}. {instruction}\n\n{text}"
         if not source_language or source_language.lower() == "auto":
             prompt = f"Translate the following text to {target_language}. {instruction}\n\n{text}"
+        else:
+            prompt = f"Translate the following text from {source_language} to {target_language}. {instruction}\n\n{text}"
 
         try:
             async with self.semaphore:
@@ -46,11 +56,14 @@ class TranslateService:
                 )
 
             elapsed = round(time.time() - start_time, 3)
-            result_text = response.get("response", "").strip()
-            eval_count = response.get("eval_count", 0)
+            result_text = getattr(response, "response", None) or ""
+            if isinstance(result_text, str):
+                result_text = result_text.strip()
+            eval_count = getattr(response, "eval_count", 0) or 0
 
             logger.info(
-                f"[translate] Success | Time: {elapsed}s | Tokens: {eval_count} | Output length: {len(result_text)}"
+                f"[Translate] DONE   lang={source_language}->{target_language}  "
+                f"time={elapsed}s  tokens={eval_count}  output={len(result_text)} chars"
             )
 
             return {
@@ -61,6 +74,6 @@ class TranslateService:
         except Exception as e:
             elapsed = round(time.time() - start_time, 3)
             logger.error(
-                f"[translate] Error | Time: {elapsed}s | {type(e).__name__}: {e}"
+                f"[Translate] ERROR  time={elapsed}s  {type(e).__name__}: {e}"
             )
             raise HTTPException(status_code=500, detail=f"Translation failed: {str(e)}")

@@ -24,7 +24,7 @@ class PaddleDetectService:
         self._model = None
         self._model_name = model_name
         self._lock = threading.Lock()
-        self._async_lock = None
+        self._async_lock = asyncio.Lock()
 
     def _load_model(self):
         """Lazy-load the TextDetection model on first request (thread-safe)."""
@@ -35,9 +35,9 @@ class PaddleDetectService:
             if self._model is not None:
                 return
 
-            logger.info(f"[_load_model] Lazy-loading TextDetection model: {self._model_name}")
+            logger.info(f"[PaddleDet] Loading model: {self._model_name}")
             self._model = TextDetection(model_name=self._model_name)
-        logger.info("[_load_model] TextDetection model loaded successfully")
+        logger.info("[PaddleDet] Model ready")
 
     async def detect(
         self,
@@ -45,9 +45,6 @@ class PaddleDetectService:
         filename: str,
     ) -> dict:
         """Detect text regions in an image. Returns boxes in original-image coordinates."""
-
-        if self._async_lock is None:
-            self._async_lock = asyncio.Lock()
 
         if self._model is None:
             await asyncio.to_thread(self._load_model)
@@ -62,13 +59,12 @@ class PaddleDetectService:
                 )
             except ValueError as e:
                 logger.warning(
-                    f"[detect] Image Rejected | File: {filename} | Error: {e}"
+                    f"[PaddleDet] REJECT file={filename}  reason={e}"
                 )
                 raise HTTPException(status_code=400, detail=str(e))
 
             logger.info(
-                f"[detect] Image prepared | File: {filename} | "
-                f"Original: {original_size[0]}x{original_size[1]} | Scale: {scale:.3f}"
+                f"[PaddleDet] START  file={filename}  size={original_size[0]}x{original_size[1]}  scale={scale:.3f}"
             )
 
             det_start = time.time()
@@ -106,9 +102,7 @@ class PaddleDetectService:
             process_time = round(time.time() - start_time, 3)
 
             logger.info(
-                f"[detect] Detection completed | File: {filename} | "
-                f"Det time: {det_time}s | Total: {process_time}s | "
-                f"Found: {len(all_boxes)} text region(s)"
+                f"[PaddleDet] DONE   file={filename}  det={det_time}s  total={process_time}s  boxes={len(all_boxes)}"
             )
 
             return {

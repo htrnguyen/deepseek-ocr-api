@@ -15,7 +15,7 @@ class DocLayoutService:
     def __init__(self):
         self.model = None
         self._lock = threading.Lock()
-        self._async_lock = None
+        self._async_lock = asyncio.Lock()
 
     def _load_model(self):
         if self.model is not None:
@@ -25,14 +25,11 @@ class DocLayoutService:
             if self.model is not None:
                 return
 
-            logger.info("[_load_model] Lazy-loading DocLayout-YOLO model")
+            logger.info("[DocLayout] Loading YOLO model from disk...")
             self.model = YOLOv10(settings.DOC_LAYOUT_MODEL_PATH)
-            logger.info("[_load_model] DocLayout-YOLO model loaded successfully")
+            logger.info("[DocLayout] YOLO model ready")
 
     async def detect_figures(self, file_content: bytes, filename: str):
-        if self._async_lock is None:
-            self._async_lock = asyncio.Lock()
-
         if self.model is None:
             await asyncio.to_thread(self._load_model)
 
@@ -46,11 +43,11 @@ class DocLayoutService:
                 )
             except ValueError as e:
                 logger.warning(
-                    f"[detect_figures] | Image Rejected | File: {filename} | {e}"
+                    f"[DocLayout] REJECT file={filename}  reason={e}"
                 )
                 raise HTTPException(status_code=400, detail=str(e))
 
-            logger.info(f"[detect_figures] | DocLayout-YOLO started | File: {filename}")
+            logger.info(f"[DocLayout] START  file={filename}  size={original_size[0]}x{original_size[1]}")
 
             async with self._async_lock:
                 results = await asyncio.to_thread(
@@ -85,8 +82,7 @@ class DocLayoutService:
 
             process_time = round(time.time() - start_time, 3)
             logger.info(
-                f"[detect_figures] | DocLayout-YOLO completed | "
-                f"Time: {process_time}s | Found: {len(image_regions)} figure(s)"
+                f"[DocLayout] DONE   file={filename}  time={process_time}s  figures={len(image_regions)}"
             )
 
             return {

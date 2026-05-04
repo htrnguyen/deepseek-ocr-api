@@ -42,10 +42,11 @@ class GLMOCRService:
             keep_alive=-1,
         )
 
-        response_meta = {}
+        response_meta = None
         try:
             for chunk in stream:
-                token = chunk.get("message", {}).get("content", "")
+                msg = getattr(chunk, "message", None)
+                token = getattr(msg, "content", "") if msg else ""
                 if token:
                     tokens.append(token)
 
@@ -53,37 +54,35 @@ class GLMOCRService:
                         first_token_time = time.time()
                         eval_time = round(first_token_time - stream_start, 1)
                         logger.info(
-                            f"[_call_ollama_streaming] First token | Time: {eval_time}s (prompt eval)"
+                            f"[GLM-OCR] First token  ttft={eval_time}s"
                         )
 
-                if len(tokens) > 0 and len(tokens) % 50 == 0:
+                if len(tokens) > 0 and len(tokens) % 100 == 0:
                     elapsed = round(time.time() - stream_start, 1)
-                    preview = "".join(tokens[-20:])[:80]
                     logger.info(
-                        f"[_call_ollama_streaming] Progress: {len(tokens)} tokens | "
-                        f"Time: {elapsed}s | Last: '{preview}'"
+                        f"[GLM-OCR] Streaming...  tokens={len(tokens)}  elapsed={elapsed}s"
                     )
 
-                if chunk.get("done"):
+                if getattr(chunk, "done", False):
                     response_meta = chunk
 
         except Exception as e:
-            logger.error(f"[_call_ollama_streaming] Error: {type(e).__name__}: {e}")
+            logger.error(f"[GLM-OCR] Stream error: {type(e).__name__}: {e}")
             if hasattr(stream, "close"):
                 stream.close()
             raise
 
         full_text = "".join(tokens)
-        eval_count = response_meta.get("eval_count", 0) or len(tokens)
+        eval_count = getattr(response_meta, "eval_count", 0) or len(tokens)
 
         if eval_count >= settings.OLLAMA_NUM_PREDICT - 10:
             logger.warning(
-                f"[_call_ollama_streaming] Hit token limit ({eval_count} >= {settings.OLLAMA_NUM_PREDICT}) - Output might be truncated."
+                f"[GLM-OCR] Token limit hit: {eval_count}/{settings.OLLAMA_NUM_PREDICT} — output may be truncated"
             )
 
         return {
             "text": full_text,
-            "prompt_eval_count": response_meta.get("prompt_eval_count", 0) or 0,
+            "prompt_eval_count": getattr(response_meta, "prompt_eval_count", 0) or 0,
             "eval_count": eval_count,
         }
 
@@ -106,15 +105,9 @@ class GLMOCRService:
             "top_p": settings.OLLAMA_TOP_P,
         }
 
-        logger.info(
-            f"[_process_single] Ollama Config | File: {filename} | Model: {self.model} | "
-            f"Prompt: '{prompt}' | Timeout: {settings.OLLAMA_TIMEOUT}s | "
-            f"Repeat Penalty: {ollama_options['repeat_penalty']}"
-        )
-
         ollama_start = time.time()
         logger.info(
-            f"[_process_single] [Step 3/3] Sending streaming request to Ollama | File: {filename}"
+            f"[GLM-OCR] START  file={filename}  model={self.model}  max_size={max(original_size)}px  timeout={settings.OLLAMA_TIMEOUT}s"
         )
 
         result = await asyncio.wait_for(
@@ -139,18 +132,13 @@ class GLMOCRService:
         token_speed = round(response_tokens / ollama_time, 1) if ollama_time > 0 else 0
 
         logger.info(
-            f"[_process_single] Pipeline Completed | File: {filename} | Total Time: {total_time}s | "
-            f"Ollama Time: {ollama_time}s | "
-            f"Tokens: {prompt_tokens}p + {response_tokens}r = {total_tokens} | "
-            f"Speed: {token_speed} tok/s | Output: {len(result_text)} chars | "
-            f"Bboxes: {len(bboxes)}\n"
-            f"  Preview: '{result_text[:200]}'"
+            f"[GLM-OCR] DONE   file={filename}  total={total_time}s  infer={ollama_time}s  "
+            f"tokens={prompt_tokens}p+{response_tokens}r={total_tokens}  speed={token_speed}tok/s  output={len(result_text)}chars"
         )
 
         if not result_text or (len(result_text) < 20 and response_tokens < 50):
             logger.warning(
-                f"[_process_single] EmptyOutput | File: {filename} | {len(result_text)} chars | "
-                f"{response_tokens} tokens | Likely hallucination"
+                f"[GLM-OCR] EMPTY  file={filename}  chars={len(result_text)}  tokens={response_tokens}  likely hallucination"
             )
             raise EmptyOutputError(
                 f"Output too short or empty: {len(result_text)} chars, "
@@ -178,7 +166,7 @@ class GLMOCRService:
         start_time = time.time()
         last_error = None
 
-        logger.info(f"[process] [Step 1/3] Pipeline Started | File: {filename}")
+        logger.info(f"[GLM-OCR] QUEUE  file={filename}  strategies={len(ImageProcessor.RETRY_SIZES)}")
 
         strategies = [
             {"max_size": size, "prompt": prompt} for size in ImageProcessor.RETRY_SIZES
@@ -199,15 +187,14 @@ class GLMOCRService:
                     )
                 except ValueError as e:
                     logger.warning(
-                        f"[process] Image Rejected | File: {filename} | {e}"
+                        f"[GLM-OCR] REJECT file={filename}  reason={e}"
                     )
                     raise HTTPException(status_code=400, detail=str(e))
 
                 saved_size = os.path.getsize(tmp_path) / 1024
                 logger.info(
-                    f"[process] [Step 2/3] Image Prepared | File: {filename} | "
-                    f"Original: {original_size[0]}x{original_size[1]} | "
-                    f"Target: {max_size}px | Saved: {saved_size:.1f} KB"
+                    f"[GLM-OCR] IMG    file={filename}  attempt={attempt}/{len(strategies)}  "
+                    f"orig={original_size[0]}x{original_size[1]}  target={max_size}px  disk={saved_size:.0f}KB"
                 )
 
                 result = await self._process_single(
@@ -230,9 +217,7 @@ class GLMOCRService:
             except (asyncio.TimeoutError, EmptyOutputError) as e:
                 last_error = e
                 logger.warning(
-                    f"[process] Attempt {attempt}/{len(strategies)} FAILED | "
-                    f"File: {filename} | Target: {max_size}px | Prompt: '{current_prompt}' | "
-                    f"Error: {type(e).__name__}"
+                    f"[GLM-OCR] RETRY  file={filename}  attempt={attempt}/{len(strategies)}  error={type(e).__name__}"
                 )
 
             except HTTPException:
@@ -251,8 +236,7 @@ class GLMOCRService:
 
         if isinstance(error, asyncio.TimeoutError):
             logger.error(
-                f"[_raise_http_error] TIMEOUT | File: {filename} | "
-                f"Elapsed: {elapsed}s | Limit: {settings.OLLAMA_TIMEOUT}s"
+                f"[GLM-OCR] TIMEOUT file={filename}  elapsed={elapsed}s  limit={settings.OLLAMA_TIMEOUT}s"
             )
             raise HTTPException(
                 status_code=504,
@@ -264,8 +248,7 @@ class GLMOCRService:
 
         if isinstance(error, EmptyOutputError):
             logger.warning(
-                f"[_raise_http_error] EMPTY OUTPUT | File: {filename} | "
-                f"Elapsed: {elapsed}s | {error}"
+                f"[GLM-OCR] EMPTY  file={filename}  elapsed={elapsed}s"
             )
             raise HTTPException(
                 status_code=422,
@@ -279,8 +262,7 @@ class GLMOCRService:
             raise error
 
         logger.error(
-            f"[_raise_http_error] ERROR | File: {filename} | "
-            f"Elapsed: {elapsed}s | {type(error).__name__}: {error}"
+            f"[GLM-OCR] ERROR  file={filename}  elapsed={elapsed}s  {type(error).__name__}: {error}"
         )
         raise HTTPException(
             status_code=500,
