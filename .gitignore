@@ -51,10 +51,6 @@ Icon
 *.swo
 
 # Project specific / ML Models
-models/*.pt
-models/*.pth
-models/*.onnx
-models/*.bin
 *.safetensors
 .code-review-graph/
 *.log
