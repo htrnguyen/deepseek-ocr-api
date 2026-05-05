@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.schemas.requests import TranslateRequest
 from app.schemas.responses import HealthResponse
-from app.services import OCRService, TranslateService, LayoutService, DetectionService
+from app.services import OCRService, TranslateService, LayoutService, DetectionService, OcrLayoutService
 
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
@@ -19,6 +19,7 @@ ocr_service = OCRService()
 translate_service = TranslateService()
 layout_service = LayoutService()
 detection_service = DetectionService()
+ocr_layout_service = OcrLayoutService()
 
 
 async def validate_image(file: UploadFile = File(...)) -> UploadFile:
@@ -38,6 +39,13 @@ async def validate_image(file: UploadFile = File(...)) -> UploadFile:
 @limiter.limit(settings.RATE_LIMIT)
 async def ocr_endpoint(request: Request, file: UploadFile = Depends(validate_image), prompt: str = Form(settings.DEFAULT_PROMPT)):
     result = await ocr_service.process(file.file_content, file.filename, prompt)
+    return result
+
+
+@router.post("/ocr-layout")
+@limiter.limit(settings.RATE_LIMIT)
+async def ocr_layout_endpoint(request: Request, file: UploadFile = Depends(validate_image)):
+    result = await ocr_layout_service.process(file.file_content, file.filename)
     return result
 
 
