@@ -44,9 +44,11 @@ class Settings(BaseSettings):
     VLLM_MODEL_NAME: str = "chandra"
 
     # macOS-specific optimizations
-    CHANDRA_USE_4BIT: bool = True   # 4-bit quantization for MPS (2x faster, saves memory)
+    # For 32GB+ RAM Macs: Set CHANDRA_HIGH_QUALITY=true, CHANDRA_USE_4BIT=false
+    CHANDRA_USE_4BIT: bool = True   # 4-bit quantization (2x faster, save memory) - disable for 32GB+
     CHANDRA_SDPA_ATTN: bool = True  # Use SDPA attention (faster on MPS)
-    CHANDRA_FAST_MODE: bool = True  # Reduce internal resolution for 2-3x speedup (macOS only)
+    CHANDRA_FAST_MODE: bool = True  # Reduce resolution for 2-3x speedup - disable for 32GB+
+    CHANDRA_HIGH_QUALITY: bool = False  # 32GB+ only: full resolution + bfloat16, slower but best quality
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
 

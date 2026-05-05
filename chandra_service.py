@@ -41,6 +41,8 @@ class ChandraService:
             chandra_settings.TORCH_ATTN = "sdpa" if settings.CHANDRA_SDPA_ATTN else None
             chandra_settings.MAX_OUTPUT_TOKENS = self._max_tokens
             chandra_settings.USE_4BIT_QUANT = settings.CHANDRA_USE_4BIT
+            # Export for scale_to_fit to detect 32GB+ mode
+            os.environ["CHANDRA_HIGH_QUALITY"] = str(settings.CHANDRA_HIGH_QUALITY).lower()
             self._hf_model = None
         else:
             self._device = "vllm"

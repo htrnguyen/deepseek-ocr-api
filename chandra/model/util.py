@@ -11,9 +11,15 @@ def scale_to_fit(
 ):
     # macOS MPS optimization: use smaller resolution for faster inference
     import sys
+    import os
     if max_size is None:
         if sys.platform == "darwin":
-            max_size = (1792, 1344)  # ~50% pixels vs 3072x2048 = 2.4MP vs 6.3MP
+            # 32GB+ RAM Macs: use full resolution for best quality
+            high_quality = os.environ.get("CHANDRA_HIGH_QUALITY", "false").lower() == "true"
+            if high_quality:
+                max_size = (3072, 2048)  # Full resolution for 32GB+ Macs
+            else:
+                max_size = (1792, 1344)  # ~50% pixels vs 3072x2048 = 2.4MP vs 6.3MP
         else:
             max_size = (3072, 2048)  # Default for CUDA
     resample_method = Image.Resampling.LANCZOS
