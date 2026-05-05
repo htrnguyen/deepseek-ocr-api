@@ -14,14 +14,12 @@ from logger import logger
 import ollama as ollama_client
 from pydantic import BaseModel
 from translate_service import TranslateService
-from chandra_service import ChandraService
 
 
 doclayout_service = DocLayoutService()
 paddle_detect_service = PaddleDetectService()
 ocr_service = GLMOCRService()
 translate_service = TranslateService()
-chandra_service = ChandraService()
 
 
 class TranslateRequest(BaseModel):
@@ -119,12 +117,6 @@ async def lifespan(app: FastAPI):
     keepalive_task = asyncio.create_task(_ollama_keepalive_loop())
     logger.info(f"[Startup] Keepalive task started  interval={settings.OLLAMA_KEEPALIVE_INTERVAL}s")
 
-    logger.info("[Startup] Preloading Chandra model...")
-    try:
-        await asyncio.to_thread(chandra_service.load)
-    except Exception as e:
-        logger.error(f"[Startup] Chandra preload failed: {e}")
-
     logger.info("[Startup] All services ready. API is online.")
     yield
 
@@ -139,7 +131,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
-    description="Unified AI Service Aggregator optimized for Apple Silicon (Mac M-Series). Integrates GLM, Chandra, YOLO, and Gemma models for OCR, layout detection, and translation.",
+    description="Unified AI Service Aggregator optimized for Apple Silicon (Mac M-Series). Integrates GLM, YOLO, and Gemma models for OCR, layout detection, and translation.",
     lifespan=lifespan,
 )
 limiter = Limiter(key_func=get_remote_address)
@@ -244,20 +236,6 @@ async def translate_text(request: Request, data: TranslateRequest):
     return {"success": True, **result, "status": "success"}
 
 
-@app.post(
-    "/chandra-ocr",
-    tags=["1. OCR & Extraction"],
-    summary="Chandra OCR (MPS)",
-    description="Advanced layout detection and high-fidelity Markdown parsing using the Chandra model. Lazily loaded and optimized to run on Mac's Unified Memory (MPS).",
-)
-@limiter.limit(settings.RATE_LIMIT)
-async def chandra_ocr(
-    request: Request, file: UploadFile = Depends(validate_image_upload)
-):
-    result = await chandra_service.process(file.file_content, file.filename)
-    return {"success": True, "filename": file.filename, **result, "status": "success"}
-
-
 @app.get(
     "/health",
     tags=["4. System"],
@@ -281,7 +259,6 @@ async def health():
     return {
         "status": "ok",
         "glm_ocr": "enabled",
-        "chandra_ocr": "enabled",
         "doclayout_yolo": "enabled",
         "paddle_detect": "enabled",
         "translate": "enabled",
