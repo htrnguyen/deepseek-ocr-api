@@ -17,13 +17,22 @@ class OCRService(BaseService):
         self.model = settings.OLLAMA_MODEL
         self.layout = LayoutService()
 
-    async def process(self, file_content: bytes, filename: str, prompt: str) -> dict:
+    async def process(
+        self,
+        file_content: bytes,
+        filename: str,
+        prompt: str,
+        skip_validation: bool = False,
+    ) -> dict:
         start = time.time()
         tmp_path = None
 
         try:
             tmp_path, original_size, scale = await asyncio.to_thread(
-                ImageProcessor.preprocess, file_content
+                ImageProcessor.preprocess,
+                file_content,
+                max_size=None,
+                skip_validation=skip_validation,
             )
 
             layout_result = await self.layout.process(file_content, filename)
@@ -32,32 +41,40 @@ class OCRService(BaseService):
             if not images:
                 result = await self._call_ollama(tmp_path, prompt)
                 total = round(time.time() - start, 2)
-                return self._build_response({
-                    "filename": filename,
-                    "text": result["text"],
-                    "has_image": False,
-                    "processing_time": f"{total}s",
-                    "tokens": result["eval_count"],
-                })
+                return self._build_response(
+                    {
+                        "filename": filename,
+                        "text": result["text"],
+                        "has_image": False,
+                        "processing_time": f"{total}s",
+                        "tokens": result["eval_count"],
+                    }
+                )
 
             full_img = Image.open(tmp_path)
-            text_with_markers = await self._process_with_markers(full_img, images, filename, scale, prompt)
+            text_with_markers = await self._process_with_markers(
+                full_img, images, filename, scale, prompt
+            )
             total = round(time.time() - start, 2)
 
-            return self._build_response({
-                "filename": filename,
-                "text": text_with_markers,
-                "has_image": True,
-                "image_count": len(images),
-                "processing_time": f"{total}s",
-                "tokens": 0,
-            })
+            return self._build_response(
+                {
+                    "filename": filename,
+                    "text": text_with_markers,
+                    "has_image": True,
+                    "image_count": len(images),
+                    "processing_time": f"{total}s",
+                    "tokens": 0,
+                }
+            )
 
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-    async def _process_with_markers(self, img: Image.Image, images: list, filename: str, scale: float, prompt: str) -> str:
+    async def _process_with_markers(
+        self, img: Image.Image, images: list, filename: str, scale: float, prompt: str
+    ) -> str:
         img_w, img_h = img.size
         image_zones = [(i["bbox"], i) for i in images]
         image_zones.sort(key=lambda x: x[0][1])
@@ -88,7 +105,9 @@ class OCRService(BaseService):
 
         return "\n\n".join(parts)
 
-    async def _ocr_region(self, img: Image.Image, bbox: tuple, filename: str, prompt: str) -> str:
+    async def _ocr_region(
+        self, img: Image.Image, bbox: tuple, filename: str, prompt: str
+    ) -> str:
         def _crop_and_save():
             region = img.crop(bbox)
             tmp_path = f"/tmp/ocr_region_{filename}_{bbox[1]}.jpg"
@@ -100,8 +119,14 @@ class OCRService(BaseService):
             with open(tmp_path, "rb") as f:
                 region_bytes = f.read()
 
-            region_file = type('File', (), {'file_content': region_bytes, 'filename': f"{filename}_region"})()
-            result = await self.process(region_bytes, f"{filename}_region", prompt)
+            region_file = type(
+                "File",
+                (),
+                {"file_content": region_bytes, "filename": f"{filename}_region"},
+            )()
+            result = await self.process(
+                region_bytes, f"{filename}_region", prompt, skip_validation=True
+            )
             return result.get("text", "")
         finally:
             if os.path.exists(tmp_path):
@@ -138,11 +163,12 @@ class OCRService(BaseService):
             }
 
         return await asyncio.wait_for(
-            asyncio.to_thread(_sync_call),
-            timeout=settings.OLLAMA_TIMEOUT
+            asyncio.to_thread(_sync_call), timeout=settings.OLLAMA_TIMEOUT
         )
 
-    async def _ocr_region_simple(self, img: Image.Image, bbox: tuple, prompt: str) -> str:
+    async def _ocr_region_simple(
+        self, img: Image.Image, bbox: tuple, prompt: str
+    ) -> str:
         def _crop_and_ocr():
             region = img.crop(bbox)
             buf = io.BytesIO()
@@ -151,7 +177,9 @@ class OCRService(BaseService):
 
             stream = ollama.chat(
                 model=self.model,
-                messages=[{"role": "user", "content": prompt, "images": [buf.getvalue()]}],
+                messages=[
+                    {"role": "user", "content": prompt, "images": [buf.getvalue()]}
+                ],
                 options={
                     "temperature": settings.OLLAMA_TEMPERATURE,
                     "num_ctx": settings.OLLAMA_NUM_CTX,
