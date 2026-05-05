@@ -1,8 +1,6 @@
 import asyncio
 import time
 import os
-import io
-import base64
 from PIL import Image
 from app.core.config import settings
 from app.core.logging import logger
@@ -75,10 +73,8 @@ class OcrLayoutService(BaseService):
                 if text.strip():
                     blocks.append({"type": "text", "content": text, "bbox": text_region})
 
-            img_data = await asyncio.to_thread(self._extract_image, img, (x1, y1, x2, y2))
             blocks.append({
                 "type": "image",
-                "data": img_data,
                 "bbox": bbox,
                 "confidence": img_info.get("confidence", 0),
             })
@@ -94,28 +90,27 @@ class OcrLayoutService(BaseService):
         return blocks
 
     async def _ocr_region(self, img: Image.Image, bbox: tuple, filename: str) -> str:
-        def _crop_and_ocr():
+        def _crop_and_save():
             region = img.crop(bbox)
-            buf = io.BytesIO()
-            region.save(buf, format="PNG")
-            buf.seek(0)
-            return buf.getvalue()
+            tmp_path = f"/tmp/ocr_region_{filename}_{bbox[1]}.jpg"
+            region.save(tmp_path, format="JPEG", quality=90)
+            return tmp_path
 
-        region_bytes = await asyncio.to_thread(_crop_and_ocr)
-        result = await self.ocr.process(region_bytes, f"{filename}_region", settings.DEFAULT_PROMPT)
-        return result.get("text", "")
-
-    def _extract_image(self, img: Image.Image, bbox: tuple) -> str:
-        region = img.crop(bbox)
-        buf = io.BytesIO()
-        region.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode()
+        tmp_path = await asyncio.to_thread(_crop_and_save)
+        try:
+            with open(tmp_path, "rb") as f:
+                region_bytes = f.read()
+            result = await self.ocr.process(region_bytes, f"{filename}_region", settings.DEFAULT_PROMPT)
+            return result.get("text", "")
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     def _build_markdown(self, blocks: list) -> str:
         parts = []
-        for block in blocks:
+        for i, block in enumerate(blocks):
             if block["type"] == "text":
                 parts.append(block["content"])
             elif block["type"] == "image":
-                parts.append(f"\n![detected_image](data:image/png;base64,{block['data']})\n")
+                parts.append(f"\n[IMAGE_{i}]\n")
         return "\n\n".join(parts)

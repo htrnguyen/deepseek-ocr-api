@@ -38,6 +38,7 @@ async def validate_image(file: UploadFile = File(...)) -> UploadFile:
 @router.post("/ocr")
 @limiter.limit(settings.RATE_LIMIT)
 async def ocr_endpoint(request: Request, file: UploadFile = Depends(validate_image), prompt: str = Form(settings.DEFAULT_PROMPT)):
+    logger.info(f"[Endpoint] POST /ocr file={file.filename}")
     result = await ocr_service.process(file.file_content, file.filename, prompt)
     return result
 
@@ -45,6 +46,7 @@ async def ocr_endpoint(request: Request, file: UploadFile = Depends(validate_ima
 @router.post("/ocr-layout")
 @limiter.limit(settings.RATE_LIMIT)
 async def ocr_layout_endpoint(request: Request, file: UploadFile = Depends(validate_image)):
+    logger.info(f"[Endpoint] POST /ocr-layout file={file.filename}")
     result = await ocr_layout_service.process(file.file_content, file.filename)
     return result
 
@@ -52,6 +54,7 @@ async def ocr_layout_endpoint(request: Request, file: UploadFile = Depends(valid
 @router.post("/paddle-detect")
 @limiter.limit(settings.RATE_LIMIT)
 async def detect_endpoint(request: Request, file: UploadFile = Depends(validate_image)):
+    logger.info(f"[Endpoint] POST /paddle-detect file={file.filename}")
     result = await detection_service.process(file.file_content, file.filename)
     return result
 
@@ -59,6 +62,7 @@ async def detect_endpoint(request: Request, file: UploadFile = Depends(validate_
 @router.post("/doclayout")
 @limiter.limit(settings.RATE_LIMIT)
 async def layout_endpoint(request: Request, file: UploadFile = Depends(validate_image)):
+    logger.info(f"[Endpoint] POST /doclayout file={file.filename}")
     result = await layout_service.process(file.file_content, file.filename)
     return result
 
@@ -66,6 +70,7 @@ async def layout_endpoint(request: Request, file: UploadFile = Depends(validate_
 @router.post("/paddle-ocr")
 @limiter.limit(settings.RATE_LIMIT)
 async def layout_legacy_endpoint(request: Request, file: UploadFile = Depends(validate_image)):
+    logger.info(f"[Endpoint] POST /paddle-ocr file={file.filename}")
     result = await layout_service.process(file.file_content, file.filename)
     return result
 
@@ -73,6 +78,7 @@ async def layout_legacy_endpoint(request: Request, file: UploadFile = Depends(va
 @router.post("/translate")
 @limiter.limit(settings.RATE_LIMIT)
 async def translate_endpoint(request: Request, data: TranslateRequest):
+    logger.info(f"[Endpoint] POST /translate text_len={len(data.text)}")
     result = await translate_service.process(data.text, data.source_language, data.target_language)
     return result
 
