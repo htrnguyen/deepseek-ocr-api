@@ -76,7 +76,7 @@ class OCRService(BaseService):
                 if text.strip():
                     parts.append(text)
 
-            parts.append("[IMAGE]")
+            parts.append(f"[IMAGE_{len(parts) + 1}]")
             last_y = y2_scaled
 
         if last_y < img_h - 50:
