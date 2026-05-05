@@ -2,17 +2,14 @@ import logging
 import sys
 from datetime import datetime, timezone, timedelta
 
-_APP_LOGGER_NAME = "ocr-api"
-
 
 def _utc7_converter(*args):
     utc_dt = datetime.utcnow().replace(tzinfo=timezone.utc)
     return utc_dt.astimezone(timezone(timedelta(hours=7))).timetuple()
 
 
-def setup_logger() -> logging.Logger:
-    log = logging.getLogger(_APP_LOGGER_NAME)
-
+def setup_logger(name: str = "ocr-api") -> logging.Logger:
+    log = logging.getLogger(name)
     if log.handlers:
         return log
 

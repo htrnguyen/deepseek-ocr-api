@@ -1,12 +1,9 @@
-from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
-
-
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
 
 class Settings(BaseSettings):
-    """Application settings"""
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     API_TITLE: str = "MacOS AI Aggregator Service"
     API_VERSION: str = "3.0"
@@ -27,19 +24,12 @@ class Settings(BaseSettings):
     OLLAMA_REPEAT_LAST_N: int = 64
     OLLAMA_TOP_K: int = 40
     OLLAMA_TOP_P: float = 0.9
-
     OLLAMA_KEEPALIVE_INTERVAL: int = 300
-    PROMPT_FREE_OCR: str = "Extract the text from this image."
-    PROMPT_MARKDOWN: str = (
-        "Please extract all text from this image and format it meticulously in Markdown. Preserve the original layout, headings, lists, and tables exactly as they appear. Do not add any conversational text."
-    )
-    PROMPT_GENERAL_OCR: str = "Please perform OCR on this image."
+
+    PROMPT_MARKDOWN: str = "Extract all text from this image and format it in Markdown. Preserve layout, headings, lists, tables. No conversational text."
     DEFAULT_PROMPT: str = PROMPT_MARKDOWN
 
     DOC_LAYOUT_MODEL_PATH: str = "models/doclayout_yolo_docstructbench_imgsz1024.pt"
-
-
-    model_config = ConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()
