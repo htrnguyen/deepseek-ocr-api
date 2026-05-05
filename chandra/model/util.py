@@ -5,10 +5,17 @@ from PIL import Image
 
 def scale_to_fit(
     img: Image.Image,
-    max_size: Tuple[int, int] = (3072, 2048),
+    max_size: Tuple[int, int] = None,
     min_size: Tuple[int, int] = (1792, 28),
     grid_size: int = 28,
 ):
+    # macOS MPS optimization: use smaller resolution for faster inference
+    import sys
+    if max_size is None:
+        if sys.platform == "darwin":
+            max_size = (1792, 1344)  # ~50% pixels vs 3072x2048 = 2.4MP vs 6.3MP
+        else:
+            max_size = (3072, 2048)  # Default for CUDA
     resample_method = Image.Resampling.LANCZOS
 
     width, height = img.size
