@@ -38,7 +38,7 @@ class LayoutService(BaseService):
                 self.model = YOLOv10(settings.DOC_LAYOUT_MODEL_PATH)
                 logger.info("[Layout] Model ready")
 
-    async def process(self, file_content: bytes, filename: str) -> dict:
+    async def process(self, file_content: bytes, filename: str, skip_validation: bool = False) -> dict:
         await asyncio.to_thread(self._load)
 
         start = time.time()
@@ -46,7 +46,7 @@ class LayoutService(BaseService):
 
         try:
             tmp_path, original_size, scale = await asyncio.to_thread(
-                ImageProcessor.preprocess, file_content
+                ImageProcessor.preprocess, file_content, max_size=None, skip_validation=skip_validation
             )
 
             def _predict_locked():

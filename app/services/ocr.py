@@ -35,7 +35,9 @@ class OCRService(BaseService):
                 skip_validation=skip_validation,
             )
 
-            layout_result = await self.layout.process(file_content, filename)
+            layout_result = await self.layout.process(
+                file_content, filename, skip_validation=skip_validation
+            )
             images = layout_result.get("images", [])
 
             if not images:
