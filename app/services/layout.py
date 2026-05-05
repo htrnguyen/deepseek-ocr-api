@@ -49,19 +49,25 @@ class LayoutService(BaseService):
                 ImageProcessor.preprocess, file_content
             )
 
-            results = await asyncio.to_thread(
-                self.model.predict, tmp_path, imgsz=1024, conf=0.25, verbose=False
-            )
+            def _predict_locked():
+                with self._model_lock:
+                    return self.model.predict(
+                        tmp_path, imgsz=1024, conf=0.25, verbose=False
+                    )
+
+            results = await asyncio.to_thread(_predict_locked)
 
             regions = self._extract_regions(results, scale)
             elapsed = round(time.time() - start, 2)
 
-            return self._build_response({
-                "filename": filename,
-                "image_count": len(regions),
-                "images": regions,
-                "processing_time": f"{elapsed}s",
-            })
+            return self._build_response(
+                {
+                    "filename": filename,
+                    "image_count": len(regions),
+                    "images": regions,
+                    "processing_time": f"{elapsed}s",
+                }
+            )
 
         finally:
             if tmp_path and os.path.exists(tmp_path):
@@ -83,10 +89,17 @@ class LayoutService(BaseService):
 
         for box, conf in zip(boxes, confs):
             x1, y1, x2, y2 = map(int, box)
-            regions.append({
-                "label": "image",
-                "bbox": [int(x1 / scale), int(y1 / scale), int(x2 / scale), int(y2 / scale)],
-                "confidence": round(float(conf), 4),
-            })
+            regions.append(
+                {
+                    "label": "image",
+                    "bbox": [
+                        int(x1 / scale),
+                        int(y1 / scale),
+                        int(x2 / scale),
+                        int(y2 / scale),
+                    ],
+                    "confidence": round(float(conf), 4),
+                }
+            )
 
         return regions

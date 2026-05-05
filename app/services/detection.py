@@ -51,7 +51,11 @@ class DetectionService(BaseService):
                 ImageProcessor.preprocess, file_content
             )
 
-            results = await asyncio.to_thread(self._model.predict, tmp_path, batch_size=1)
+            def _predict_locked():
+                with self._model_lock:
+                    return self._model.predict(tmp_path, batch_size=1)
+
+            results = await asyncio.to_thread(_predict_locked)
             boxes = self._extract_boxes(results, scale)
 
             elapsed = round(time.time() - start, 2)
