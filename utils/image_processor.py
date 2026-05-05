@@ -12,6 +12,10 @@ class ImageProcessor:
     MAX_ASPECT_RATIO = 5.0
     RETRY_SIZES = [1024, 768, 512]
 
+    # macOS MPS optimizations: Chandra model works best with specific dimensions
+    CHANDRA_OPTIMAL_SIZE = 1024  # Chandra uses 1024x1024 internally
+    MPS_MAX_SIZE = 1536  # MPS performs better with slightly larger images
+
     @classmethod
     def preprocess_image(
         cls,

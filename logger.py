@@ -20,7 +20,7 @@ def setup_logger() -> logging.Logger:
     log.propagate = False
 
     fmt = logging.Formatter(
-        fmt="%(asctime)s +0700  %(levelname)-8s  %(message)s",
+        fmt="%(asctime)s | %(levelname)-8s | %(message)s",
         datefmt="%H:%M:%S",
     )
     fmt.converter = _utc7_converter

@@ -38,6 +38,15 @@ class Settings(BaseSettings):
 
     DOC_LAYOUT_MODEL_PATH: str = "models/doclayout_yolo_docstructbench_imgsz1024.pt"
 
+    CHANDRA_METHOD: str = "hf"
+    CHANDRA_MAX_TOKENS: int = 4096
+    VLLM_API_BASE: str = "http://localhost:8100/v1"
+    VLLM_MODEL_NAME: str = "chandra"
+
+    # macOS-specific optimizations
+    CHANDRA_USE_4BIT: bool = False  # 4-bit quantization for MPS (saves 50% memory)
+    CHANDRA_SDPA_ATTN: bool = True  # Use SDPA attention (faster on MPS)
+
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
 

@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     TORCH_ATTN: str | None = None
     BBOX_SCALE: int = 1000
 
+    # macOS optimizations
+    USE_4BIT_QUANT: bool = False  # Enable for Macs with limited Unified Memory
+
     # vLLM server settings
     VLLM_API_KEY: str = "EMPTY"
     VLLM_API_BASE: str = "http://localhost:8000/v1"

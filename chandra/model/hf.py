@@ -13,6 +13,8 @@ def generate_hf(
     bbox_scale: int = settings.BBOX_SCALE,
     **kwargs,
 ) -> List[GenerationResult]:
+    import torch
+
     if max_output_tokens is None:
         max_output_tokens = settings.MAX_OUTPUT_TOKENS
 
@@ -37,13 +39,20 @@ def generate_hf(
     if im_end_id is not None and im_end_id not in eos_token_id:
         eos_token_id.append(im_end_id)
 
-    generated_ids = model.generate(
-        **inputs,
-        max_new_tokens=max_output_tokens,
-        eos_token_id=eos_token_id,
-        do_sample=False,
-        use_cache=True,
-    )
+    # macOS MPS: Use autocast for bfloat16 efficiency
+    generate_context = torch.autocast(device_type=model.device.type, dtype=torch.bfloat16) \
+        if model.device.type == "mps" else torch.inference_mode()
+
+    with generate_context:
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_output_tokens,
+            eos_token_id=eos_token_id,
+            do_sample=False,
+            use_cache=True,
+            pad_token_id=model.processor.tokenizer.pad_token_id,
+        )
+
     generated_ids_trimmed = [
         out_ids[len(in_ids) :]
         for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
@@ -77,7 +86,7 @@ def process_batch_element(item: BatchInputItem):
 def load_model():
     try:
         import torch
-        from transformers import AutoModelForImageTextToText, AutoProcessor
+        from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
     except ImportError:
         raise ImportError(
             "HuggingFace backend requires additional dependencies. "
@@ -89,9 +98,25 @@ def load_model():
         device_map = {"": settings.TORCH_DEVICE}
 
     kwargs = {
-        "dtype": torch.bfloat16,
         "device_map": device_map,
     }
+
+    # macOS Unified Memory optimization: Use 4-bit quantization if available
+    if settings.TORCH_DEVICE == "mps" and hasattr(settings, "USE_4BIT_QUANT") and settings.USE_4BIT_QUANT:
+        try:
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            )
+            print("[Chandra] Using 4-bit quantization for MPS (reduced memory)")
+        except Exception as e:
+            print(f"[Chandra] 4-bit quant not available: {e}, using bfloat16")
+            kwargs["dtype"] = torch.bfloat16
+    else:
+        kwargs["dtype"] = torch.bfloat16
+
     if settings.TORCH_ATTN:
         kwargs["attn_implementation"] = settings.TORCH_ATTN
 
