@@ -64,7 +64,7 @@ class OCRService(BaseService):
 
         parts = []
         last_y = 0
-        token_count = 0
+        img_idx = 0
 
         for bbox, img_info in image_zones:
             x1, y1, x2, y2 = bbox
@@ -76,7 +76,8 @@ class OCRService(BaseService):
                 if text.strip():
                     parts.append(text)
 
-            parts.append(f"[IMAGE_{len(parts) + 1}]")
+            img_idx += 1
+            parts.append(f"[IMAGE_{img_idx}]")
             last_y = y2_scaled
 
         if last_y < img_h - 50:
