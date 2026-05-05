@@ -12,7 +12,8 @@ from config import settings
 
 # macOS MPS Optimizations
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+# Limit MPS memory to prevent OOM crashes (0.7 = 70% of available memory)
+os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.7")
 
 
 def _select_device() -> str:
@@ -95,13 +96,41 @@ class ChandraService:
         except Exception:
             pass  # Non-critical optimization
 
+    def _resize_for_mps(self, image: Image.Image, max_size: int = 1536) -> Image.Image:
+        """Resize large images for MPS to prevent OOM crashes"""
+        width, height = image.size
+        if max(width, height) > max_size:
+            scale = max_size / max(width, height)
+            new_size = (int(width * scale), int(height * scale))
+            logger.info(f"[Chandra] Resizing for MPS: {width}x{height} -> {new_size[0]}x{new_size[1]}")
+            return image.resize(new_size, Image.Resampling.LANCZOS)
+        return image
+
     def _run_inference_hf(self, image: Image.Image, max_tokens: int, prompt_type: str) -> list:
         """Blocking HF inference — called via asyncio.to_thread."""
         import torch
         from chandra.model.hf import generate_hf
         batch = [BatchInputItem(image=image, prompt_type=prompt_type)]
-        with torch.inference_mode():
-            return generate_hf(batch=batch, model=self._hf_model, max_output_tokens=max_tokens)
+        
+        try:
+            with torch.inference_mode():
+                return generate_hf(batch=batch, model=self._hf_model, max_output_tokens=max_tokens)
+        except RuntimeError as e:
+            # MPS OOM - fallback to CPU for this request
+            if self._device == "mps" and "allocate" in str(e).lower():
+                logger.warning(f"[Chandra] MPS OOM, falling back to CPU for this request: {e}")
+                # Move model to CPU temporarily
+                original_device = self._device
+                try:
+                    self._hf_model = self._hf_model.to("cpu")
+                    torch.mps.empty_cache()
+                    with torch.inference_mode():
+                        result = generate_hf(batch=batch, model=self._hf_model, max_output_tokens=max_tokens)
+                    return result
+                finally:
+                    # Move back to MPS
+                    self._hf_model = self._hf_model.to(original_device)
+            raise
 
     def _run_inference_vllm(self, image: Image.Image, max_tokens: int, prompt_type: str) -> list:
         """Blocking vLLM inference — called via asyncio.to_thread."""
@@ -128,6 +157,11 @@ class ChandraService:
 
         try:
             image = Image.open(io.BytesIO(file_content)).convert("RGB")
+            
+            # macOS MPS: Resize large images to prevent OOM (max 1536px for MPS safety)
+            if self._device == "mps":
+                image = await asyncio.to_thread(self._resize_for_mps, image)
+            
             logger.info(
                 f"[Chandra] START  file={filename}  size={image.width}x{image.height}  "
                 f"backend={self._method}  max_tokens={max_tokens}"
