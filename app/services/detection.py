@@ -37,7 +37,7 @@ class DetectionService(BaseService):
         with self._model_lock:
             if self._model is None:
                 logger.info("[Detection] Loading Paddle model...")
-                self._model = TextDetection(model_name="PP-OCRv5_server_det")
+                self._model = TextDetection(model_name="PP-OCRv5_mobile_det")
                 logger.info("[Detection] Model ready")
 
     async def process(self, file_content: bytes, filename: str) -> dict:
@@ -50,6 +50,7 @@ class DetectionService(BaseService):
             tmp_path, original_size, scale = await asyncio.to_thread(
                 ImageProcessor.preprocess, file_content
             )
+            logger.info(f"[Detection] Image resized: scale={scale:.3f}, original={original_size}")
 
             def _predict_locked():
                 with self._model_lock:
@@ -79,7 +80,11 @@ class DetectionService(BaseService):
 
             for i, poly in enumerate(polys):
                 score = scores[i] if i < len(scores) else 0.0
-                poly_orig = [[int(x / scale), int(y / scale)] for x, y in poly] if scale < 1 else [[int(x), int(y)] for x, y in poly]
+                # Scale coords back to original image size
+                if scale < 1:
+                    poly_orig = [[int(x / scale), int(y / scale)] for x, y in poly]
+                else:
+                    poly_orig = [[int(x), int(y)] for x, y in poly]
                 xs, ys = [p[0] for p in poly_orig], [p[1] for p in poly_orig]
 
                 boxes.append({
