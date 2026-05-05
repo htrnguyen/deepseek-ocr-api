@@ -38,7 +38,11 @@ def generate_hf(
         eos_token_id.append(im_end_id)
 
     generated_ids = model.generate(
-        **inputs, max_new_tokens=max_output_tokens, eos_token_id=eos_token_id
+        **inputs,
+        max_new_tokens=max_output_tokens,
+        eos_token_id=eos_token_id,
+        do_sample=False,
+        use_cache=True,
     )
     generated_ids_trimmed = [
         out_ids[len(in_ids) :]
