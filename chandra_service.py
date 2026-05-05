@@ -37,8 +37,12 @@ class ChandraService:
             import torch
             self._device = _select_device()
             chandra_settings.TORCH_DEVICE = self._device
-            # macOS: SDPA is fastest on MPS
-            chandra_settings.TORCH_ATTN = "sdpa" if settings.CHANDRA_SDPA_ATTN else None
+            # macOS MPS: SDPA often falls back to slow path, eager may be faster
+            if self._device == "mps":
+                chandra_settings.TORCH_ATTN = None  # Use eager on MPS (faster than SDPA slow fallback)
+                logger.info("[Chandra] MPS detected - using eager attention (SDPA slow on MPS)")
+            else:
+                chandra_settings.TORCH_ATTN = "sdpa" if settings.CHANDRA_SDPA_ATTN else None
             chandra_settings.MAX_OUTPUT_TOKENS = self._max_tokens
             chandra_settings.USE_4BIT_QUANT = settings.CHANDRA_USE_4BIT
             # Export for scale_to_fit to detect 32GB+ mode
