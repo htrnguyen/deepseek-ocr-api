@@ -79,7 +79,7 @@ class LayoutService(BaseService):
             return regions
 
         result = results[0]
-        figure_mask = (result.boxes.cls == 3).squeeze()
+        figure_mask = result.boxes.cls == 3
 
         if not figure_mask.any():
             return regions
