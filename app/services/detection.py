@@ -37,7 +37,7 @@ class DetectionService(BaseService):
         with self._model_lock:
             if self._model is None:
                 logger.info("[Detection] Loading Paddle model...")
-                self._model = TextDetection(model_name="PP-OCRv5_mobile_det")
+                self._model = TextDetection(model_name="PP-OCRv5_server_det")
                 logger.info("[Detection] Model ready")
 
     async def process(self, file_content: bytes, filename: str) -> dict:
@@ -50,7 +50,9 @@ class DetectionService(BaseService):
             tmp_path, original_size, scale = await asyncio.to_thread(
                 ImageProcessor.preprocess, file_content
             )
-            logger.info(f"[Detection] Image resized: scale={scale:.3f}, original={original_size}")
+            logger.info(
+                f"[Detection] Image resized: scale={scale:.3f}, original={original_size}"
+            )
 
             def _predict_locked():
                 with self._model_lock:
@@ -61,12 +63,14 @@ class DetectionService(BaseService):
 
             elapsed = round(time.time() - start, 2)
 
-            return self._build_response({
-                "filename": filename,
-                "box_count": len(boxes),
-                "boxes": boxes,
-                "processing_time": f"{elapsed}s",
-            })
+            return self._build_response(
+                {
+                    "filename": filename,
+                    "box_count": len(boxes),
+                    "boxes": boxes,
+                    "processing_time": f"{elapsed}s",
+                }
+            )
 
         finally:
             if tmp_path and os.path.exists(tmp_path):
@@ -87,10 +91,12 @@ class DetectionService(BaseService):
                     poly_orig = [[int(x), int(y)] for x, y in poly]
                 xs, ys = [p[0] for p in poly_orig], [p[1] for p in poly_orig]
 
-                boxes.append({
-                    "poly": poly_orig,
-                    "bbox": [min(xs), min(ys), max(xs), max(ys)],
-                    "score": round(float(score), 4),
-                })
+                boxes.append(
+                    {
+                        "poly": poly_orig,
+                        "bbox": [min(xs), min(ys), max(xs), max(ys)],
+                        "score": round(float(score), 4),
+                    }
+                )
 
         return boxes
