@@ -2,14 +2,11 @@ import os
 import asyncio
 import time
 import threading
+import httpx
 from fastapi import HTTPException
-from paddleocr import TextDetection
 from app.core.config import settings
 from app.core.logging import logger
 from app.services.base import BaseService
-from app.utils.image import ImageProcessor
-
-os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 
 class DetectionService(BaseService):
@@ -27,40 +24,24 @@ class DetectionService(BaseService):
     def __init__(self):
         if self._initialized:
             return
-        self._model = None
-        self._model_lock = threading.Lock()
         self._initialized = True
 
-    def _load(self):
-        if self._model is not None:
-            return
-        with self._model_lock:
-            if self._model is None:
-                logger.info("[Detection] Loading Paddle model...")
-                self._model = TextDetection(model_name="PP-OCRv5_server_det")
-                logger.info("[Detection] Model ready")
-
     async def process(self, file_content: bytes, filename: str) -> dict:
-        await asyncio.to_thread(self._load)
-
         start = time.time()
-        tmp_path = None
+
+        # Call the new layout OCR API
+        url = "http://203.162.234.214:8181/api/v1/ocr"
 
         try:
-            tmp_path, original_size, scale = await asyncio.to_thread(
-                ImageProcessor.preprocess, file_content
-            )
-            logger.info(
-                f"[Detection] Image resized: scale={scale:.3f}, original={original_size}"
-            )
+            files = {"files": (filename, file_content, "image/jpeg")}
+            data = {"refine": "true"}
 
-            def _predict_locked():
-                with self._model_lock:
-                    return self._model.predict(tmp_path, batch_size=1)
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(url, data=data, files=files)
+                response.raise_for_status()
+                result = response.json()
 
-            results = await asyncio.to_thread(_predict_locked)
-            boxes = self._extract_boxes(results, scale)
-
+            boxes = self._extract_boxes(result)
             elapsed = round(time.time() - start, 2)
 
             return self._build_response(
@@ -72,31 +53,33 @@ class DetectionService(BaseService):
                 }
             )
 
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        except Exception as e:
+            logger.error(f"[Detection] API call failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
-    def _extract_boxes(self, results, scale: float) -> list:
+    def _extract_boxes(self, api_response: dict) -> list:
         boxes = []
-        for res in results:
-            polys = res.get("dt_polys", [])
-            scores = res.get("dt_scores", [])
 
-            for i, poly in enumerate(polys):
-                score = scores[i] if i < len(scores) else 0.0
-                # Scale coords back to original image size
-                if scale < 1:
-                    poly_orig = [[int(x / scale), int(y / scale)] for x, y in poly]
-                else:
-                    poly_orig = [[int(x), int(y)] for x, y in poly]
-                xs, ys = [p[0] for p in poly_orig], [p[1] for p in poly_orig]
-
+        def traverse(node):
+            # Extract nodes that have bounding box info, skip Page structural nodes
+            if (
+                "polygon" in node
+                and "bbox" in node
+                and node.get("block_type") != "Page"
+            ):
                 boxes.append(
                     {
-                        "poly": poly_orig,
-                        "bbox": [min(xs), min(ys), max(xs), max(ys)],
-                        "score": round(float(score), 4),
+                        "poly": node["polygon"],
+                        "bbox": node["bbox"],
+                        "score": 0.99,  # API doesn't provide score, default to high confidence
                     }
                 )
+            for child in node.get("children", []):
+                traverse(child)
+
+        results = api_response.get("results", [])
+        if results:
+            for child in results[0].get("children", []):
+                traverse(child)
 
         return boxes
